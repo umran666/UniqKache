@@ -36,8 +36,29 @@ mean anything.
 
 ## Current results
 
-_Empty pending regeneration._ Run the commands under **Regenerating** below; they take seconds
-on the synthetic model and need no downloads.
+### `correctness-non-evicting-20260913-133304.*`
+
+**Backs:** R2 in `docs/research.md`, and the "Correctness first" table in the README.
+
+`experiments/configs/correctness.json` — `synthetic:tiny`, context 128, 4 generated tokens,
+capacity 256 for the bounded policies. Because 256 exceeds the whole 132-token workload, no
+policy can evict, so all of them must reproduce the full-cache result exactly.
+
+Pass condition: `cache_final_tokens` **and** `quality_value` both equal the `full_cache` row.
+
+| Policy | Final tokens | Perplexity | Difference from reference |
+| --- | --- | --- | --- |
+| `full_cache` (reference) | 524 | 502.059692 | — |
+| `sliding_window` | 524 | 502.059692 | `+0.00e+00` |
+| `lru` | 524 | 502.059692 | `+0.00e+00` |
+| `attention_based` | 524 | 502.059692 | `+0.00e+00` |
+| `token_importance` | 524 | 502.059692 | `+0.00e+00` |
+
+**Result: PASS.** All four evicting policies reproduce the reference bit-for-bit. Recorded
+`git_commit = 6973a8e1`, `git_dirty = false`, `generated_tokens = 4`.
+
+The one integrity warning is the intended one — the model weights are random, so the quality
+column is a diagnostic of cache behaviour and not a claim about model quality.
 
 ## Superseded results
 
@@ -51,6 +72,7 @@ quoted.
 | `correctness-non-evicting-20260913-123031.*` | Built on a wrong premise: `keep_ratio: 1.0` gives a budget of exactly 128, which is *less* than prefill (128) plus decode (4), so the bounded policies did evict and their token counts legitimately differed from the reference. Quality matched exactly; the pass condition did not. | F7 |
 | `correctness-non-evicting-20260913-123122.*` | Values were correct — all four evicting policies reproduced the reference at 524 final tokens and perplexity `502.059692` — but the records carry no `git_commit`, no `git_dirty` and no `generated_tokens`: they predate the repository history and that field. Superseded by the regeneration, not by a contradiction. | Provenance gap |
 | `sliding_window-retention-sweep-20260913-122018.*` | Same provenance gap. Its memory and quality columns back R3 and R4 and were reproduced digit-for-digit by the regeneration, which is the point: the values were right, the records were unverifiable. | Provenance gap |
+| `correctness-non-evicting-20260913-132530.*` | Identical values and full provenance, but written before the artifact writer specified LF endings: the files on disk carried CRLF against an LF index, and the config file had no trailing newline. Superseded by `133304` for formatting alone. | Line endings |
 
 ### Why keep the two pre-provenance files
 

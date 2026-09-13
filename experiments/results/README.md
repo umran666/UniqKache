@@ -60,6 +60,38 @@ Pass condition: `cache_final_tokens` **and** `quality_value` both equal the `ful
 The one integrity warning is the intended one — the model weights are random, so the quality
 column is a diagnostic of cache behaviour and not a claim about model quality.
 
+### `sliding_window-retention-sweep-20260913-133813.*`
+
+**Backs:** R3 and R4 in `docs/research.md`, and the retention table in the README.
+
+`synthetic:tiny`, context 192, **2 generated tokens**, batch 1, float32, CUDA, greedy, seed 0,
+`sliding_window` with 4 attention sinks, plus a `full_cache` reference.
+
+| Budget | Cache bytes | vs full | Perplexity |
+| --- | --- | --- | --- |
+| full (193) | 395,264 | 1.000 | 515.57421875 |
+| 144 (75%) | 294,912 | 0.746 | 514.56475830 |
+| 96 (50%) | 196,608 | 0.497 | 514.48822021 |
+| 48 (25%) | 98,304 | 0.249 | 515.14343262 |
+| 19 (10%) | 38,912 | 0.098 | 527.70678711 |
+
+**The decode length is part of the result, not a detail.** It sets the `full_cache` reference
+occupancy (`context + generated - 1` = 193), while the bounded budgets are computed from the
+*context length* (192 × 75/50/25/10% = 144/96/48/19). Drop `--max-new-tokens 2` and the
+reference becomes 199 tokens and 407,552 bytes, so the bounded rows' "vs full" ratios silently
+drift from the percentages they are labelled with. The bounded rows themselves do not move —
+they are capacity-limited — which is what makes the drift easy to miss. See `docs/research.md`,
+F14.
+
+**Read the memory and quality columns only.** This run also recorded TTFT, TPOT and throughput,
+but those columns are not reproducible: repeating the sweep gave run-to-run variation larger
+than the between-policy difference, and one fixed budget measured 88.8 ms in one pass and
+58.5 ms in another. The latency columns are present in the file because the schema records what
+was measured; they are **not** reported as results. See `docs/research.md`, F10.
+
+Memory is arithmetic and exact. Quality is bit-reproducible — every perplexity value here is
+identical, digit for digit, to the two superseded sweeps below.
+
 ## Superseded results
 
 Kept because each one documents why it is not current. No number from any of them should be
@@ -74,6 +106,10 @@ quoted.
 | `sliding_window-retention-sweep-20260913-122018.*` | Same provenance gap. Its memory and quality columns back R3 and R4 and were reproduced digit-for-digit by the regeneration, which is the point: the values were right, the records were unverifiable. | Provenance gap |
 | `correctness-non-evicting-20260913-132530.*` | Identical values and full provenance, but written before the artifact writer specified LF endings: the files on disk carried CRLF against an LF index, and the config file had no trailing newline. Superseded by `133304` for formatting alone. | Line endings |
 
+The wrong-workload sweep described under F14 is *not* listed here. It was an exploratory run,
+never believed and never committed, so it lives in the git-ignored `runs/` directory with the
+other scratch output. `superseded/` is for results that were once reported.
+
 ### Why keep the two pre-provenance files
 
 They are the evidence for a claim that is easy to make and hard to support: that quality is
@@ -86,9 +122,13 @@ intermediate one would weaken that evidence to a single comparison.
 
 ```bash
 python -m uniqkache.bench --config experiments/configs/correctness.json
+
 python -m uniqkache.bench --model synthetic:tiny --context-length 192 \
-    --policy sliding_window --sweep
+    --policy sliding_window --sweep --max-new-tokens 2
 ```
+
+`--max-new-tokens 2` is not optional for the sweep: the default is 8, which moves the
+`full_cache` reference row and breaks the comparison against the table above. See F14.
 
 Results are written with a timestamped name, so a re-run never overwrites an earlier one.
 Compare the new files against these before replacing them; if a number moved, that is a

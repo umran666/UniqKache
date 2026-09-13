@@ -108,7 +108,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
-"docs/**" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["uniqkache"]
@@ -116,3 +115,9 @@ known-first-party = ["uniqkache"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# Markdown is deliberately excluded. `ruff format` rewrites Python code blocks
+# inside `.md` files, and the illustrative snippets in `docs/` and `README.md`
+# use comment alignment to present an interface as a compact list -- layout the
+# formatter collapses. `ruff check` does not read Markdown at all, so formatting
+# it buys no correctness: it only reflows prose. Verified with `ruff 0.16.3`.
+exclude = ["*.md"]

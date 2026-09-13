@@ -43,8 +43,8 @@ from pathlib import Path
 # Allow running straight from a checkout without an install.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from uniqkache.bench.config import percent_sweep  # noqa: E402
-from uniqkache.bench.runner import run_config  # noqa: E402
+from uniqkache.bench.config import percent_sweep
+from uniqkache.bench.runner import run_config
 
 FORWARD = (1.0, 0.75, 0.5, 0.25, 0.1)
 REVERSE = (0.1, 0.25, 0.5, 0.75, 1.0)
@@ -72,7 +72,7 @@ def _run(label: str, ratios: tuple[float, ...], args: argparse.Namespace) -> lis
         rows.append((position, record.capacity, record.ttft_ms, record.tpot_ms))
         print(
             f"  position {position}: policy={record.policy:<15s} "
-            f"budget={str(record.capacity):>4s} "
+            f"budget={record.capacity!s:>4s} "
             f"TTFT={record.ttft_ms:7.2f}ms TPOT={record.tpot_ms:6.2f}ms"
         )
     return rows
@@ -83,7 +83,9 @@ def _describe(label: str, rows: list[tuple]) -> None:
         return
     first, last = rows[0][2], rows[-1][2]
     direction = "decreasing" if last < first else "increasing"
-    print(f"  -> {label}: TTFT is {direction} from the first run to the last ({first:.1f} -> {last:.1f} ms)")
+    print(
+        f"  -> {label}: TTFT is {direction} from the first run to the last ({first:.1f} -> {last:.1f} ms)"
+    )
 
 
 def main() -> int:

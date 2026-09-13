@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Read the research notes first
-    url: https://github.com/uniqkache/UniqKache/blob/main/docs/research.md
+    url: https://github.com/umran666/UniqKache/blob/main/docs/research.md
     about: What has been established, what has failed, and what is still open. Many questions are already recorded here.
   - name: Benchmark methodology
-    url: https://github.com/uniqkache/UniqKache/blob/main/docs/benchmarks.md
+    url: https://github.com/umran666/UniqKache/blob/main/docs/benchmarks.md
     about: How measurements are taken and how to read a result, before filing a performance report.
   - name: Contribution workflow
-    url: https://github.com/uniqkache/UniqKache/blob/main/CONTRIBUTING.md
+    url: https://github.com/umran666/UniqKache/blob/main/CONTRIBUTING.md
     about: The Issue to Research-result pipeline, coding standards, and what a PR needs to include.

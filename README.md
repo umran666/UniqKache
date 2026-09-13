@@ -101,7 +101,7 @@ Requires Python 3.10+. `torch` is the only hard dependency — the cache, polici
 are importable and testable without `transformers`.
 
 ```bash
-git clone https://github.com/uniqkache/UniqKache.git
+git clone https://github.com/umran666/UniqKache.git
 cd UniqKache
 
 python -m pip install -e .            # core only

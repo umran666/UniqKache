@@ -45,7 +45,7 @@ Two things this pipeline forbids:
 ## Development setup
 
 ```bash
-git clone https://github.com/uniqkache/UniqKache.git
+git clone https://github.com/umran666/UniqKache.git
 cd UniqKache
 python -m pip install -e ".[dev]"
 pre-commit install          # optional but recommended

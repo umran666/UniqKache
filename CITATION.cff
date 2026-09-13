@@ -15,8 +15,8 @@ authors:
 version: "0.0.1"
 date-released: "2026-09-13"
 license: "Apache-2.0"
-repository-code: "https://github.com/uniqkache/UniqKache"
-url: "https://github.com/uniqkache/UniqKache"
+repository-code: "https://github.com/umran666/UniqKache"
+url: "https://github.com/umran666/UniqKache"
 keywords:
   - kv-cache
   - long-context

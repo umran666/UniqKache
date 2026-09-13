@@ -163,5 +163,5 @@ Initial pre-alpha. The framework, its tests and its documentation. **No adaptive
 repository has been validated on a real model**, and no result in it should be quoted as a
 finding about long-context inference.
 
-[Unreleased]: https://github.com/uniqkache/UniqKache/compare/v0.0.1...HEAD
-[0.0.1]: https://github.com/uniqkache/UniqKache/releases/tag/v0.0.1
+[Unreleased]: https://github.com/umran666/UniqKache/compare/v0.0.1...HEAD
+[0.0.1]: https://github.com/umran666/UniqKache/releases/tag/v0.0.1

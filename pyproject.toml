@@ -44,10 +44,10 @@ dev = [
 docs = ["mkdocs>=1.5", "mkdocs-material>=9.5"]
 
 [project.urls]
-Homepage = "https://github.com/uniqkache/UniqKache"
-Repository = "https://github.com/uniqkache/UniqKache"
-Issues = "https://github.com/uniqkache/UniqKache/issues"
-Changelog = "https://github.com/uniqkache/UniqKache/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/umran666/UniqKache"
+Repository = "https://github.com/umran666/UniqKache"
+Issues = "https://github.com/umran666/UniqKache/issues"
+Changelog = "https://github.com/umran666/UniqKache/blob/main/CHANGELOG.md"
 
 [project.scripts]
 uniqkache = "uniqkache.bench.cli:main"

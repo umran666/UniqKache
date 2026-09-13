@@ -136,6 +136,13 @@ fix — are covered by the checks they name instead.
   silently — `144/193 = 0.746` became `144/199 = 0.724` — while the bounded rows themselves
   stayed byte-identical. The decode length is now part of the stated workload and written into
   the command. See `docs/research.md`, F14.
+- **`KVCache.evict()` counted an eviction when nothing was dropped.** The increment was
+  unconditional, whereas `enforce_capacity` increments only when something was evicted. A no-op
+  evict on an empty cache, or one whose selection kept every token, bumped `stats().evictions`
+  and `state_dict()["evictions"]` — so a record could claim an eviction that removed zero tokens.
+  Token accounting was unaffected; `evicted_tokens` was always correct. `evict()` now counts an
+  eviction only when `dropped > 0`, matching `enforce_capacity`, with a regression test pinning
+  the agreement between the two paths.
 
 ### Results
 

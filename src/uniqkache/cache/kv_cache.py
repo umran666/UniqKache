@@ -251,8 +251,9 @@ class KVCache:
                 selection = self._complement(indices, num)
             dropped += self._store.keep(idx, selection)
 
-        self._evictions += 1
-        self._evicted_tokens += dropped
+        if dropped:
+            self._evictions += 1
+            self._evicted_tokens += dropped
         return dropped
 
     def clear(self) -> None:

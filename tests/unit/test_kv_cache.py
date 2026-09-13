@@ -171,6 +171,73 @@ class TestEviction:
         for layer in range(NUM_LAYERS):
             assert not full_cache.store.layer(layer).is_initialized
 
+    # --- eviction accounting (issue #15) -----------------------------------
+    # `evict()` must count an eviction only when tokens were actually dropped,
+    # in agreement with `enforce_capacity`. A no-op evict that removes zero
+    # tokens must not bump the counter `stats().evictions` reports.
+
+    def test_noop_evict_on_empty_cache_does_not_count(self, full_cache):
+        # The exact symptom: an empty cache reports an eviction that dropped
+        # nothing, so a result could quote a counter that was not a result.
+        assert full_cache.stats().evictions == 0
+        dropped = full_cache.evict(0, indices=torch.tensor([0]))
+        assert dropped == 0
+        assert full_cache.stats().evictions == 0
+        assert full_cache.state_dict()["evictions"] == 0
+
+    def test_noop_evict_that_selects_everything_does_not_count(self, bounded_config, kv_factory):
+        # A cache within budget whose selection keeps every token: `evict()`
+        # with no selector delegates to `enforce_capacity`, which must also
+        # count nothing when nothing is dropped.
+        cache = KVCache(bounded_config, policy=SlidingWindowPolicy())
+        for _ in range(bounded_config.capacity):
+            cache.append(0, kv_factory(1), kv_factory(1))
+
+        assert cache.stats().evictions == 0
+        dropped = cache.evict(0, keep=torch.arange(bounded_config.capacity))
+        assert dropped == 0
+        assert cache.stats().evictions == 0
+
+    def test_evict_keep_everything_when_over_budget_does_not_count(
+        self, bounded_config, kv_factory
+    ):
+        # Over budget (kept over via auto_enforce=False), but the explicit
+        # `keep` selection retains every token, so nothing is dropped. The
+        # counter must not claim an eviction that removed zero tokens.
+        cache = KVCache(bounded_config, policy=SlidingWindowPolicy(), auto_enforce=False)
+        for _ in range(bounded_config.capacity + 3):
+            cache.append(0, kv_factory(1), kv_factory(1))
+        assert cache.num_tokens(0) == bounded_config.capacity + 3
+
+        dropped = cache.evict(0, keep=torch.arange(cache.num_tokens(0)))
+        assert dropped == 0
+        assert cache.stats().evictions == 0
+
+    def test_evict_and_enforce_capacity_agree_when_nothing_is_dropped(
+        self, bounded_config, kv_factory
+    ):
+        # The two eviction paths must agree on what counts as an eviction.
+        # `evict()` with an explicit keep-everything selector and
+        # `enforce_capacity()` on a cache within budget both drop nothing, so
+        # both must leave `stats().evictions` at zero.
+        cache = KVCache(bounded_config, policy=SlidingWindowPolicy())
+        for _ in range(bounded_config.capacity):
+            cache.append(0, kv_factory(1), kv_factory(1))
+
+        assert cache.evict(0, keep=torch.arange(cache.num_tokens(0))) == 0
+        assert cache.evict(0) == 0  # delegates to enforce_capacity
+        assert cache.stats().evictions == 0
+
+    def test_evict_counts_only_actual_drops(self, full_cache, kv_factory):
+        full_cache.append(0, kv_factory(6), kv_factory(6))
+        dropped = full_cache.evict(0, indices=torch.tensor([2, 4]))
+        assert dropped == 2
+        assert full_cache.stats().evictions == 1
+        assert full_cache.state_dict()["evicted_tokens"] == 2
+        # A further no-op must not add to the count.
+        full_cache.evict(0, indices=torch.tensor([]))
+        assert full_cache.stats().evictions == 1
+
 
 # ---------------------------------------------------------------------------
 # Policy wiring

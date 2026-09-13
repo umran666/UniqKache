@@ -513,6 +513,51 @@ class TestResultArtifactLineEndingsRegression:
 
 
 # ---------------------------------------------------------------------------
+# Bug 9 — `KVCache.evict()` counted an eviction when nothing was dropped.
+#
+# The increment was unconditional, whereas `enforce_capacity` increments only
+# when something was evicted. A no-op evict on an empty cache, or one retaining
+# every token, bumped `stats().evictions` — so a result could quote a counter
+# claiming an eviction that removed zero tokens.
+# ---------------------------------------------------------------------------
+
+
+class TestEvictAccountingRegression:
+    """Pins: an eviction counter must not claim a no-op dropped tokens."""
+
+    def test_noop_evict_on_an_empty_cache_reports_zero_evictions(self):
+        config = CacheConfig(
+            num_layers=1, num_kv_heads=NUM_KV_HEADS, head_dim=HEAD_DIM, dtype=torch.float32
+        )
+        cache = KVCache(config, policy=FullCachePolicy())
+
+        cache.evict(0, indices=torch.tensor([0]))
+        # Before the fix this reported 1: an eviction that dropped nothing.
+        assert cache.stats().evictions == 0
+        assert cache.state_dict()["evictions"] == 0
+
+    def test_the_two_eviction_paths_agree_on_a_noop(self):
+        config = CacheConfig(
+            num_layers=1,
+            num_kv_heads=NUM_KV_HEADS,
+            head_dim=HEAD_DIM,
+            dtype=torch.float32,
+            capacity=8,
+            attention_sinks=1,
+        )
+        cache = KVCache(config, policy=SlidingWindowPolicy())
+        for _ in range(8):
+            tensor = torch.randn(1, NUM_KV_HEADS, 1, HEAD_DIM)
+            cache.append(0, tensor, tensor)
+
+        # evict(keep=all) keeps every token; enforce_capacity on an at-budget
+        # cache drops nothing. Both must report zero evictions and agree.
+        assert cache.evict(0, keep=torch.arange(cache.num_tokens(0))) == 0
+        assert cache.evict(0) == 0
+        assert cache.stats().evictions == 0
+
+
+# ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------
 

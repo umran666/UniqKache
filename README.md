@@ -113,7 +113,7 @@ Verify the install:
 
 ```bash
 python -m uniqkache.bench --list-policies
-pytest -q                             # 302 tests, no GPU and no downloads required
+pytest -q                             # 306 tests, no GPU and no downloads required
 ```
 
 > **Note on multiple Python installs.** If `python` on your `PATH` is a different interpreter
@@ -245,9 +245,15 @@ That is a correctness result, not a performance one.
 
 ### Retention sweep
 
-`synthetic:tiny`, context 192, batch 1, float32, CUDA, greedy decoding, seed 0.
-`sliding_window` with 4 attention sinks. Cache bytes are the summed KV footprint across all 4
-layers.
+`synthetic:tiny`, context 192, 2 generated tokens, batch 1, float32, CUDA, greedy decoding,
+seed 0. `sliding_window` with 4 attention sinks. Cache bytes are the summed KV footprint across
+all 4 layers.
+
+The decode length is stated because it is load-bearing, not incidental: it sets the `full_cache`
+reference occupancy (`context + generated - 1` = 193 tokens), and the bounded rows' budgets are
+computed from the *context length* (192 × 75/50/25/10% = 144/96/48/19). A longer decode would
+push the reference further above 192 and make the labelled ratios drift from the ratios they
+name. See [docs/research.md, F14](docs/research.md#failed-experiments).
 
 Only the deterministic columns are reported. Memory is arithmetic; quality is bit-reproducible
 (identical to all printed digits across two independent sweeps). **Latency is excluded** —

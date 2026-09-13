@@ -232,8 +232,8 @@ infrastructure exists to prevent.
 
 ### Reference numbers
 
-`synthetic:tiny`, context 192, batch 1, float32, CUDA, greedy decoding, seed 0, on an
-RTX 3050 Laptop (4 GiB, compute 8.6, CUDA 12.4, torch 2.6.0+cu124):
+`synthetic:tiny`, context 192, 2 generated tokens, batch 1, float32, CUDA, greedy decoding,
+seed 0, on an RTX 3050 Laptop (4 GiB, compute 8.6, CUDA 12.4, torch 2.6.0+cu124):
 
 | Policy | Budget | Cache bytes | vs full | Perplexity |
 | --- | --- | --- | --- | --- |

@@ -185,8 +185,8 @@ not any policy.
 
 ### R4 — Retention sweep: memory and quality (H4, provisional)
 
-`synthetic:tiny`, context 192, batch 1, float32, CUDA, greedy, seed 0. The reference device is
-an RTX 3050 Laptop (4 GiB, compute 8.6, CUDA 12.4, torch 2.6.0+cu124).
+`synthetic:tiny`, context 192, 2 generated tokens, batch 1, float32, CUDA, greedy, seed 0. The
+reference device is an RTX 3050 Laptop (4 GiB, compute 8.6, CUDA 12.4, torch 2.6.0+cu124).
 
 **Only the deterministic columns are shown.** Memory is arithmetic and quality is
 bit-reproducible (verified identical across two independent sweeps); latency at this scale is
@@ -561,6 +561,61 @@ stating: **when the measurement path and the performance path are separate code,
 diverge, and the result describes neither.** The guard against it is to make the two paths
 share the signal-plumbing code rather than reimplement it, and to check that a diagnostic
 actually discriminates between the things it is supposed to compare.
+
+### F14 — The documented sweep command did not reproduce the reported sweep
+
+**Expected:** the command written in `experiments/results/README.md` reproduces the committed
+retention sweep. That is what a results directory is for.
+
+**Observed:** re-running it produced a different `full_cache` reference row:
+
+```
+                          documented    plain command
+cache_final_tokens             772            796
+cache_bytes_total          395,264        407,552
+```
+
+The four bounded rows were byte-identical in both runs, and every perplexity value matched to
+all printed digits.
+
+**Cause:** the sweep's decode length was an undocumented parameter. The committed run had been
+produced with `--max-new-tokens 2`; the CLI default is `8`, and the documented command omitted
+the flag. The reference occupancy is `context + generated - 1`, so 2 generated tokens gives
+193 and 8 gives 199 — 6 tokens, or 12,288 bytes at 2048 bytes per token.
+
+The reason this was easy to miss is structural. The bounded rows' budgets are computed from the
+**context length** (`192 × 75/50/25/10% = 144/96/48/19`), not from the reference occupancy, so
+changing the decode length cannot move them. Only the reference row changes — and since the
+`vs full` column is computed *against* that row, the four ratios silently shift:
+
+```
+budget 144:   144/193 = 0.746   ->   144/199 = 0.724
+budget  96:    96/193 = 0.497   ->    96/199 = 0.482
+budget  48:    48/193 = 0.249   ->    48/199 = 0.241
+budget  19:    19/193 = 0.098   ->    19/199 = 0.095
+```
+
+The table's "75%" label is 75% of the *context length*; against a 199-token reference the
+measured ratio is 72.4%. Both numbers are defensible, but a reader comparing the label to the
+ratio would have concluded the measurement was wrong when it was the workload that had moved.
+
+**Fix:** the decode length is now stated in the workload description everywhere the sweep is
+reported, and written into the regeneration command, with a note that it is not optional. The
+alternative — adopting the default of 8 — was rejected because a longer decode pushes the
+reference further above the context length and makes the labelled ratios *less* accurate, for
+no gain: the bounded rows do not depend on it.
+
+**Lesson:** a parameter that affects a reported number is part of the result even when it looks
+like a detail. The failure mode here is the same as F11 and F12 — the scaffolding documented
+one thing and the tooling did another — with a twist that made it harder to see: the change was
+invisible in every row except the one the other rows were measured against. F12's guard (a CI
+job that runs the documented commands) would not have caught this, because the command *ran*
+successfully; it just produced a different number. What would catch it is the check performed
+here: re-run the documented command and compare against the committed artifact. That is now
+what `experiments/results/README.md` asks for before replacing a file.
+
+**What this does not affect:** the bounded rows, the memory-scaling conclusion, and every
+quality value. All are unchanged.
 
 ---
 

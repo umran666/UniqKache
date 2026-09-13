@@ -37,7 +37,7 @@ Two project-specific conventions:
 - `uniqkache.bench` — `RunSpec`, `ExperimentConfig`, the runner, and the `uniqkache.bench` CLI
   with `--sweep` retention sweeps.
 - Tests: unit, integration (incremental decode equals a single-shot forward pass) and
-  regression suites. 302 tests, no GPU and no downloads required.
+  regression suites. 306 tests, no GPU and no downloads required.
 - Documentation: `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/research.md`
   (including a Failed Experiments section), `docs/benchmarks.md`, `benchmarks/README.md`,
   `baselines/README.md`.
@@ -78,7 +78,9 @@ Two project-specific conventions:
 
 ### Fixed
 
-Recorded in `docs/research.md` under Failed Experiments, each with a regression test.
+Recorded in `docs/research.md` under Failed Experiments. The defects that can recur silently
+carry a regression test; the two that cannot — a documentation error (F14) and a warning-noise
+fix — are covered by the checks they name instead.
 
 - Quantisation gather confused the reduction axis with the granularity it produces, raising
   `IndexError` when evicting a compressed layer. Key/value axes were also transposed.
@@ -121,6 +123,37 @@ Recorded in `docs/research.md` under Failed Experiments, each with a regression 
   does rewrite Python inside `.md` code blocks, and was collapsing the intentional comment
   alignment in `docs/architecture.md`; Markdown is now excluded from the formatter, since
   reformatting prose that is never linted buys no correctness.
+- **Result artifacts were written with the platform's line endings.** `.gitattributes` normalises
+  them to LF, so on Windows every generated file disagreed with the index and git warned on each
+  add — recurring noise on every result commit, which is how warnings stop being read. All three
+  writers now specify `"\n"`, and the config file gained the trailing newline `json.dumps` omits.
+  `write_results` had no test coverage at all before this, despite producing every committed
+  artifact; it now has three.
+- **The documented sweep command did not reproduce the reported sweep.** The committed run had
+  been produced with `--max-new-tokens 2`; the CLI default is `8`, and the flag was not written
+  down. The `full_cache` reference row moved from 193 tokens / 395,264 bytes to 199 / 407,552,
+  and because the `vs full` column is measured against that row, the four bounded ratios shifted
+  silently — `144/193 = 0.746` became `144/199 = 0.724` — while the bounded rows themselves
+  stayed byte-identical. The decode length is now part of the stated workload and written into
+  the command. See `docs/research.md`, F14.
+
+### Results
+
+The committed artifacts in `experiments/results/` were regenerated. The first generation
+predated both the git history and the `generated_tokens` field, so no record in it could name
+the code that produced it; a number that cannot be tied to a commit cannot be checked, so it is
+not a result. They move to `superseded/` for that reason alone.
+
+**No value changed.** The correctness experiment reproduces 524 final tokens and perplexity
+`502.059692` for all five policies, and the retention sweep reproduces every cache byte and
+every perplexity value digit for digit. Only the records changed: they now carry `git_commit`,
+`git_dirty` and `generated_tokens`, and the only integrity warning left is the intended one
+about randomly-initialised weights.
+
+The intermediate generations are kept in `superseded/`, which is what makes the reproducibility
+claim checkable rather than asserted: three generations of the same sweep agree on every
+perplexity value to all printed digits and disagree on every latency value.
+
 
 ---
 

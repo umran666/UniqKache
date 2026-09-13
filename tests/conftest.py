@@ -13,6 +13,7 @@ import torch
 
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
+from uniqkache.metrics.record import BenchmarkRecord
 from uniqkache.models.synthetic import SyntheticConfig, build_model, get_preset
 from uniqkache.policies import build_policy
 
@@ -23,6 +24,36 @@ NUM_KV_HEADS = 2
 NUM_HEADS = 4
 HEAD_DIM = 8
 HIDDEN = NUM_HEADS * HEAD_DIM
+
+
+def good_record(**overrides) -> BenchmarkRecord:
+    """A record that should pass validation, unless overridden to fail.
+
+    Lives here rather than in the unit module that first needed it, because the
+    regression suite builds records too. A test helper shared across suites
+    belongs in `conftest`, not imported from one test module into another: the
+    second arrangement makes an unrelated unit module a dependency of the
+    regression suite, so editing the wrong test file breaks the wrong tests.
+    """
+    defaults = {
+        "run_id": "r1",
+        "git_commit": "abc123",
+        "git_dirty": False,
+        "model": "synthetic:tiny",
+        "policy": "full_cache",
+        "context_length": 256,
+        "generated_tokens": 8,
+        "capacity": None,
+        "ttft_ms": 10.0,
+        "tpot_ms": 1.0,
+        "tokens_per_second": 100.0,
+        "quality_metric": "perplexity",
+        "quality_value": 500.0,
+        "quality_reference": 500.0,
+        "weights_are_random": False,
+    }
+    defaults.update(overrides)
+    return BenchmarkRecord(**defaults)
 
 
 @pytest.fixture

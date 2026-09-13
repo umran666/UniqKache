@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import good_record
 from uniqkache.bench.config import (
     ExperimentConfig,
     RunSpec,
@@ -157,29 +158,6 @@ class TestExperimentConfig:
 # ---------------------------------------------------------------------------
 
 
-def good_record(**overrides) -> BenchmarkRecord:
-    """A record that should pass validation, unless overridden to fail."""
-    defaults = {
-        "run_id": "r1",
-        "git_commit": "abc123",
-        "git_dirty": False,
-        "model": "synthetic:tiny",
-        "policy": "full_cache",
-        "context_length": 256,
-        "generated_tokens": 8,
-        "capacity": None,
-        "ttft_ms": 10.0,
-        "tpot_ms": 1.0,
-        "tokens_per_second": 100.0,
-        "quality_metric": "perplexity",
-        "quality_value": 500.0,
-        "quality_reference": 500.0,
-        "weights_are_random": False,
-    }
-    defaults.update(overrides)
-    return BenchmarkRecord(**defaults)
-
-
 class TestRecordValidation:
     def test_a_complete_record_has_no_problems(self):
         assert validate_record(good_record()) == []
@@ -299,6 +277,16 @@ class TestReporting:
         text = path.read_text(encoding="utf-8")
         assert "model_config" in text or "run_id" in text
         assert "synthetic:tiny" in text
+
+    def test_csv_uses_lf_line_endings(self, tmp_path: Path):
+        # `.gitattributes` normalises result files to LF. The csv module emits
+        # "\r\n" by default, so without an explicit terminator a CSV written on
+        # Windows differs from the index and git warns on every add. Read as
+        # bytes: text mode would translate the endings away and hide the bug.
+        path = records_to_csv([good_record()], tmp_path / "out.csv")
+        raw = path.read_bytes()
+        assert b"\r\n" not in raw
+        assert raw.endswith(b"\n")
 
     def test_summarize_groups_by_policy(self):
         summary = summarize([good_record(), good_record(policy="lru", capacity=8)])

@@ -19,9 +19,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from tests.conftest import HEAD_DIM, NUM_KV_HEADS
+from tests.conftest import HEAD_DIM, NUM_KV_HEADS, good_record
 from uniqkache.bench.config import RunSpec
-from uniqkache.bench.runner import _warmup
+from uniqkache.bench.runner import RunOutcome, _warmup, write_results
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.store import _gather_quantized
 from uniqkache.cache.types import CacheConfig
@@ -472,6 +472,44 @@ class TestQualityPassRecordsAttentionRegression:
         assert values["attention_based"] is not None
         assert values["sliding_window"] is not None
         assert values["attention_based"] != values["sliding_window"]
+
+
+# ---------------------------------------------------------------------------
+# Bug 8 — the runner wrote its artifacts with the platform's line endings, so
+# on Windows every generated file disagreed with the LF normalisation in
+# `.gitattributes` and git warned on each add. Harmless in itself, but a warning
+# that fires on every result commit is one people learn to skip, and the next
+# warning to appear alongside it would be skipped too.
+# ---------------------------------------------------------------------------
+
+
+class TestResultArtifactLineEndingsRegression:
+    """Pins: results are written with LF endings on every platform."""
+
+    def test_write_results_emits_lf_only(self, tmp_path: Path):
+        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        paths = write_results([outcome], tmp_path, "line-endings")
+
+        assert set(paths) == {"jsonl", "csv", "config"}
+        for label, path in paths.items():
+            # Read as bytes: text mode would translate the endings away and
+            # hide exactly the bug this test exists for.
+            raw = path.read_bytes()
+            assert b"\r\n" not in raw, f"{label} was written with CRLF endings"
+            assert raw.endswith(b"\n"), f"{label} does not end with a newline"
+
+    def test_the_written_jsonl_round_trips(self, tmp_path: Path):
+        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        paths = write_results([outcome], tmp_path, "round-trip")
+        assert load_records(paths["jsonl"])[0].run_id == "r1"
+
+    def test_the_written_config_is_not_mistaken_for_a_record(self, tmp_path: Path):
+        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        write_results([outcome], tmp_path, "config-vs-record")
+        # Bug 6's failure mode, checked against real runner output rather than a
+        # hand-built fixture: the config file sits beside the record and must be
+        # skipped by the loader.
+        assert len(load_records(tmp_path)) == 1
 
 
 # ---------------------------------------------------------------------------

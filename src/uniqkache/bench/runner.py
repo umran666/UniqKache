@@ -513,8 +513,14 @@ def write_results(
 
     records = [outcome.record for outcome in outcomes]
 
+    # Every artifact is written with "\n" endings explicitly, on every platform.
+    # `.gitattributes` normalises these files to LF, so a Windows run would
+    # otherwise produce a file that differs from the index in line endings and
+    # make git warn on each add -- recurring warning noise on a data artifact,
+    # which is the kind of thing that trains people to ignore warnings. The CSV
+    # writer needs `lineterminator` because it emits "\r\n" by default.
     jsonl_path = output_dir / f"{base}.jsonl"
-    with jsonl_path.open("w", encoding="utf-8") as handle:
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
             handle.write(json.dumps(record.to_dict(), default=str) + "\n")
 
@@ -530,8 +536,12 @@ def write_results(
             },
             indent=2,
             default=str,
-        ),
+        )
+        # json.dumps does not end with a newline, and a text file without one
+        # shows up as "\ No newline at end of file" in every diff.
+        + "\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     return {"jsonl": jsonl_path, "csv": csv_path, "config": config_path}

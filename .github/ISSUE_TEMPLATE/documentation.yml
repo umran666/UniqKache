@@ -1,0 +1,62 @@
+name: Documentation
+description: Something is unclear, missing, wrong, or misleading.
+title: "docs: "
+labels: ["documentation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation defects in this project are treated as real defects. A limitation that
+        a reader discovers for themselves is a documentation bug, and an overclaim in a doc is
+        worse than a missing feature.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      options:
+        - Missing — something is not documented at all
+        - Unclear — documented, but I could not follow it
+        - Incorrect — the doc disagrees with the code
+        - Misleading — technically true but creates a wrong impression
+        - Outdated — describes an earlier state of the project
+        - Broken link or example
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: File and section, or the URL.
+      placeholder: "docs/benchmarks.md, section 'Reading a result'"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong
+      description: Quote the text if you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested change
+      description: What should it say instead? A concrete rewrite is the most useful form of this report.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Low — a typo or awkward phrasing
+        - Medium — confusing, but I worked it out
+        - High — I could not complete the task because of it
+        - Critical — the doc makes a claim the code or data does not support
+    validations:
+      required: true

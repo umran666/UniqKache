@@ -1,0 +1,128 @@
+name: Research proposal
+description: Propose a method or a hypothesis that must be demonstrated experimentally.
+title: "research: "
+labels: ["research", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the entry point of the project's contribution pipeline:
+
+        **Issue → Hypothesis → Implementation → Baseline → Experiment → Benchmark → PR → Review → Merge → Research result**
+
+        Every field below is required. The **Failure criteria** field is the most important one:
+        a hypothesis you cannot falsify is not a hypothesis, and a proposal without failure
+        criteria will be sent back before any code is written.
+
+        If your idea already exists in the literature, that is fine — reproduce it and cite it.
+        A reproduction is a legitimate contribution. Presenting one as new is not.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the concrete problem? What fails, or costs too much, today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: A single falsifiable prediction. State it as a claim that could turn out to be false.
+      placeholder: "Under a 25% token budget on a dense-attention model, attention-based eviction retains more long-range retrieval accuracy than recency-based eviction at equal memory."
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure-criteria
+    attributes:
+      label: Failure criteria
+      description: |
+        What result would prove the hypothesis wrong? Be specific and numeric where you can.
+        "It doesn't work" is not criteria. "Quality within noise of the baseline at equal
+        budget" is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: related-work
+    attributes:
+      label: Related work
+      description: |
+        Papers and methods that already address this. Say which you will reproduce as a
+        baseline, and how your proposal differs — or admit that it does not, and that you are
+        reproducing it. Cite with links or arXiv ids.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-method
+    attributes:
+      label: Proposed method
+      description: The mechanism. How does it decide? What signals does it use? Where does it hook into the cache?
+    validations:
+      required: true
+
+  - type: textarea
+    id: contribution-type
+    attributes:
+      label: Contribution type
+      description: Classify honestly. Most contributions are (a) or (b), and that is fine.
+      placeholder: |
+        (a) reproduced technique
+        (b) engineering improvement
+        (c) genuinely new idea
+        (d) validated finding
+    validations:
+      required: true
+
+  - type: textarea
+    id: experiment-design
+    attributes:
+      label: Experiment design
+      description: |
+        Model, context lengths, budget(s), precision, seeds, quality metric, and the retention
+        ratios. Retention sweeps should use 100/75/50/25/10 % unless you justify otherwise.
+      value: |
+        - Model:
+        - Context lengths:
+        - Budget(s):
+        - Retention ratios: 100 / 75 / 50 / 25 / 10 %
+        - Precision:
+        - Seeds:
+        - Quality metric:
+        - Baseline(s) compared against:
+        - Hardware:
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-outcome
+    attributes:
+      label: Expected outcome
+      description: What you expect to see, and what would count as a positive result. State the trade-off you expect, not just the win.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and known limitations
+      description: Where could this measurement mislead? What does it not establish even if it succeeds?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: commitments
+    attributes:
+      label: Commitments
+      options:
+        - label: I will measure quality alongside any performance claim.
+          required: true
+        - label: I will record a negative result in docs/research.md rather than dropping it.
+          required: true
+        - label: I have checked whether this already exists in the literature.
+          required: true
+        - label: I will not describe this as an improvement before a baseline comparison exists.
+          required: true

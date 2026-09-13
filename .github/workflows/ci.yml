@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  lint:
+    name: Lint and format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install ruff
+        run: python -m pip install "ruff>=0.6"
+      - name: Ruff check
+        run: ruff check src tests benchmarks --output-format=github
+      - name: Ruff format check
+        run: ruff format --check src tests benchmarks
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        # The suite is required to pass without a GPU and without any download.
+        # If this step ever needs hardware, that is a regression in the design.
+        run: python -m pytest -q
+
+  package:
+    name: Package builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Check the wheel installs and the CLI runs
+        run: |
+          python -m pip install dist/*.whl
+          python -m uniqkache.bench --list-policies
+
+  benchmark-smoke:
+    name: Benchmark smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Run the correctness experiment
+        # This is a correctness gate, not a performance gate. Every evicting policy
+        # is given a non-evicting budget and must reproduce the full-cache result
+        # exactly. A performance number here would be meaningless on CI hardware,
+        # so none is asserted.
+        run: |
+          python -m uniqkache.bench \
+            --config experiments/configs/correctness.json \
+            --output-dir /tmp/uniqkache-results \
+            --quiet
+      - name: Verify the pass condition
+        run: |
+          python - <<'PY'
+          import csv, glob, sys
+
+          files = sorted(glob.glob("/tmp/uniqkache-results/correctness-non-evicting-*.csv"))
+          if not files:
+              sys.exit("no correctness results were written")
+          rows = list(csv.DictReader(open(files[-1])))
+
+          ref = next((r for r in rows if r["policy"] == "full_cache"), None)
+          if ref is None:
+              sys.exit("no full_cache reference row found")
+
+          ref_ppl = float(ref["quality_value"])
+          ref_tok = int(ref["cache_final_tokens"])
+
+          failed = False
+          for r in rows:
+              ppl = float(r["quality_value"])
+              tok = int(r["cache_final_tokens"])
+              ok = tok == ref_tok and abs(ppl - ref_ppl) < 1e-4
+              print(f"{r['policy']:18s} tokens={tok} ppl={ppl:.6f} "
+                    f"{'PASS' if ok else 'FAIL'}")
+              failed |= not ok
+
+          sys.exit(1 if failed else 0)
+          PY

@@ -1,0 +1,84 @@
+name: Performance investigation
+description: Something is slower, larger, or more memory-hungry than it should be.
+title: "perf: "
+labels: ["performance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A performance report needs **numbers**, not impressions. Without a measurement there is
+        nothing to compare a fix against, and no way to tell whether the fix worked.
+
+        If you have not measured yet, that is fine — say so below and describe what you intend
+        to measure. That is a legitimate report.
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What is slow or large? Which phase — prefill, decode, eviction, compression, offload, quality evaluation, startup?
+    validations:
+      required: true
+
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement
+      description: |
+        The numbers you have. Include the record or table if you have one. If you have not
+        measured yet, describe the measurement you plan to run.
+    validations:
+      required: true
+
+  - type: textarea
+    id: comparison
+    attributes:
+      label: Compared against what
+      description: |
+        What is the reference point? A previous version, another policy at the same budget, a
+        theoretical bound, or the closed-form accounting.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Model, context length, batch size, policy, budget, precision, device.
+      value: |
+        - Model:
+        - Context length:
+        - Batch size:
+        - Policy / budget:
+        - Precision:
+        - Device:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Suspected area
+      options:
+        - cache append (known O(T) per step)
+        - eviction / gather
+        - scoring and selection
+        - compression / dequantisation
+        - offload planning
+        - model forward pass
+        - quality evaluation
+        - benchmark runner overhead
+        - startup / import
+        - not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: awareness
+    attributes:
+      label: Known issues
+      options:
+        - label: I have read the known measurement limitations in docs/benchmarks.md.
+          required: true
+        - label: I understand latency comparisons are only valid between policies under an identical store.
+          required: true

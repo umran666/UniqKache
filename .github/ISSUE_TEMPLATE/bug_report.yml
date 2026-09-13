@@ -1,0 +1,95 @@
+name: Bug report
+description: Something is wrong — a crash, a wrong result, or a violated invariant.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. A bug in this project is usually a **wrong result**, not just a
+        crash — a cache that silently drops a token is more damaging than one that raises.
+
+        Please include the exact command and the full record where you can. A report with a
+        reproducible command gets fixed; a report without one usually cannot be.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behaviour, as precisely as you can state it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: If this is a violated invariant, say which one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact command, config, or code. Include the model, context length, policy and budget.
+      render: bash
+      placeholder: |
+        python -m uniqkache.bench \
+            --model synthetic:tiny \
+            --context-length 192 \
+            --policy sliding_window \
+            --keep-ratio 0.25
+    validations:
+      required: true
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback or output
+      description: Full traceback, or the record / table that shows the wrong value.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which part of the project?
+      options:
+        - cache (storage, eviction, accounting)
+        - policies (scoring, selection)
+        - compression (quantisation)
+        - offload / prefetch
+        - controllers
+        - models (synthetic or HF backend)
+        - runtime (generation, timing)
+        - metrics (quality, record, reporting)
+        - bench (config, runner, CLI)
+        - tests / CI
+        - documentation
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Paste the output of the command below.
+      value: |
+        ```
+        python -c "import sys, torch, platform; print(sys.version); print(torch.__version__); print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''); print(platform.platform())"
+        ```
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md).
+          required: true

@@ -1,0 +1,87 @@
+name: Benchmark proposal
+description: Propose a new benchmark, measurement, or metric.
+title: "bench: "
+labels: ["benchmark", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this to propose **what** gets measured, not what gets built. A benchmark is only
+        useful if a reader can tell whether a result from it means anything.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What should be measured
+      description: The metric or quantity, and its units.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it is needed
+      description: What decision would this measurement let someone make that they cannot make today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: methodology
+    attributes:
+      label: Measurement methodology
+      description: |
+        How is it measured? What is timed, what is excluded, and where are the synchronisation
+        points? Note anything that could be mistaken for the thing being measured.
+    validations:
+      required: true
+
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline and comparison
+      description: What is it compared against, and at what settings? A benchmark without a baseline is a number, not a result.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - memory
+        - latency / throughput
+        - quality
+        - correctness
+        - scaling (context length, batch size)
+        - hardware tier behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: pitfalls
+    attributes:
+      label: Known pitfalls
+      description: |
+        How could this measurement mislead? What would a false positive look like? Two real
+        examples from this project: a first-timed-run artefact that inflated TTFT by 30x, and
+        a perplexity metric that saturated at `inf` and looked like a result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: record-fields
+    attributes:
+      label: Record fields
+      description: Which fields must the record carry for this measurement to be reproducible?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: commitments
+    attributes:
+      label: Commitments
+      options:
+        - label: This benchmark measures quality, or states why quality is not applicable.
+          required: true
+        - label: I will include a full-cache reference at the same settings.
+          required: true

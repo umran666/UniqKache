@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a capability — a new interface, backend, metric or utility.
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for **engineering** work. If you are proposing a *method* whose value has to
+        be demonstrated experimentally, use the **Research proposal** template instead — it
+        asks for the baseline and the failure criteria, which this one does not.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed capability
+      description: What should exist, and what would its interface look like?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including doing nothing, and using what already exists.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - cache
+        - policies
+        - compression
+        - offload
+        - prefetch
+        - controllers
+        - models / backends
+        - runtime
+        - metrics
+        - bench / tooling
+        - hardware tier
+        - contributor infrastructure
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and limitations
+      description: What would this *not* cover? What is explicitly out of scope?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to implement this.
+          required: false
+        - label: This changes a stable interface, and I understand it needs discussion first.
+          required: false

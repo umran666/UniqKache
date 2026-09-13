@@ -1,0 +1,106 @@
+{
+  "name": "single-run",
+  "runs": [
+    {
+      "run_id": "full_cache-synthetic:tiny-256-f96b3567",
+      "schema_version": "1.0.0",
+      "timestamp": "2026-09-13T06:46:22.123728+00:00",
+      "git_commit": null,
+      "git_dirty": null,
+      "model": "synthetic:tiny",
+      "model_revision": null,
+      "model_num_parameters": 656512,
+      "model_config": {
+        "vocab_size": 512,
+        "hidden_size": 128,
+        "intermediate_size": 256,
+        "num_layers": 4,
+        "num_heads": 4,
+        "num_kv_heads": 2,
+        "max_position_embeddings": 2048,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 10000.0,
+        "tie_word_embeddings": true,
+        "head_dim": 32
+      },
+      "weights_are_random": true,
+      "tokenizer": null,
+      "task": "generation",
+      "dataset": null,
+      "context_length": 256,
+      "batch_size": 1,
+      "precision": "float32",
+      "policy": "full_cache",
+      "policy_config": {
+        "cache_config": {
+          "num_layers": 4,
+          "num_kv_heads": 2,
+          "head_dim": 32,
+          "dtype": "torch.float32",
+          "device": "cuda",
+          "capacity": null,
+          "attention_sinks": 4,
+          "batch_size": 1
+        },
+        "compressor": {
+          "name": "int8",
+          "lossy": true,
+          "key_axis": 2,
+          "value_axis": 3,
+          "num_bits": 8,
+          "symmetric_keys": true,
+          "symmetric_values": true
+        }
+      },
+      "capacity": null,
+      "attention_sinks": 4,
+      "compressor": null,
+      "device": "cuda",
+      "gpu_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+      "gpu_total_memory_bytes": 4294443008,
+      "gpu_compute_capability": "8.6",
+      "peak_memory_bytes": 14782976,
+      "cache_bytes_total": 530432,
+      "cache_bytes_on_device": 530432,
+      "cache_bytes_offloaded": 0,
+      "cache_compression_ratio": 1.0,
+      "cache_final_tokens": 1036,
+      "ttft_ms": 1313.7927000061609,
+      "tpot_ms": 45.907933342580996,
+      "prefill_ms": 1313.7927000061609,
+      "decode_ms": 138.54700000956655,
+      "total_ms": 1452.3397000157274,
+      "latency_p50_ms": 35.61780002200976,
+      "latency_p90_ms": 65.55412000743672,
+      "tokens_per_second": 28.871069021514746,
+      "quality_metric": "perplexity",
+      "quality_value": Infinity,
+      "quality_reference": Infinity,
+      "seed": 0,
+      "torch_version": "2.6.0+cu124",
+      "cuda_version": "12.4",
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python_version": "3.10.11",
+      "environment": {
+        "device_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+        "device_total_memory_bytes": 4294443008,
+        "compute_capability": "8.6",
+        "torch_version": "2.6.0+cu124",
+        "cuda_version": "12.4",
+        "quality_chunk_size": 1,
+        "quality_used_cache": true,
+        "quality_is_interpretable": false,
+        "quality_caveat": "measured on a randomly-initialised model. Valid as a diagnostic of cache behaviour (information loss must worsen it) but NOT valid as model quality. Do not quote as a language-modelling result."
+      },
+      "notes": "",
+      "status": "experimental",
+      "quality_delta": NaN
+    }
+  ],
+  "problems": {
+    "full_cache-synthetic:tiny-256-f96b3567": [
+      "git_commit is missing; the result cannot be tied to a code version",
+      "quality was measured on a randomly-initialised model. That is a valid diagnostic of cache behaviour but must not be reported as model quality; see docs/research.md."
+    ]
+  }
+}

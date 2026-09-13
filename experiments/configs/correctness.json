@@ -1,0 +1,70 @@
+{
+  "name": "correctness-non-evicting",
+  "description": "Correctness experiment, not a performance experiment. Each evicting policy is given a budget LARGER than the whole workload (context 128 + 4 generated tokens = 132 <= capacity 256), so it must never actually evict. Under that condition every policy has to reproduce the full-cache result exactly: same final token count and same quality value. Any difference is a bug in the policy, in the eviction path, or in the accounting -- not a research result. Pass condition: cache_final_tokens AND quality_value both equal the full_cache reference row. Compare rows in the emitted CSV/JSONL; docs/benchmarks.md describes the exact comparison. NOTE: an earlier version of this config used keep_ratio 1.0, which gives a budget of exactly 128 -- smaller than prefill(128) + decode(4) -- so the bounded policies did evict and the token counts legitimately differed. See docs/research.md, Failed Experiments.",
+  "runs": [
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 128,
+      "attention_sinks": 0,
+      "max_new_tokens": 4,
+      "task": "correctness",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reference row"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "sliding_window",
+      "context_length": 128,
+      "capacity": 256,
+      "attention_sinks": 0,
+      "max_new_tokens": 4,
+      "task": "correctness",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "capacity 256 > 132 total tokens, so no eviction should occur"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "lru",
+      "context_length": 128,
+      "capacity": 256,
+      "attention_sinks": 0,
+      "max_new_tokens": 4,
+      "task": "correctness",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "capacity 256 > 132 total tokens, so no eviction should occur"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "attention_based",
+      "context_length": 128,
+      "capacity": 256,
+      "attention_sinks": 0,
+      "max_new_tokens": 4,
+      "task": "correctness",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "capacity 256 > 132 total tokens, so no eviction should occur"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "token_importance",
+      "context_length": 128,
+      "capacity": 256,
+      "attention_sinks": 0,
+      "max_new_tokens": 4,
+      "task": "correctness",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "capacity 256 > 132 total tokens, so no eviction should occur"
+    }
+  ]
+}

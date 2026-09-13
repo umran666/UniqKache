@@ -1,0 +1,83 @@
+{
+  "name": "policy-sweep",
+  "description": "Cross-policy comparison at a fixed context length. Every bounded policy is given the same 25% token budget so that a memory or latency difference is attributable to the policy, not to a different budget. The full-cache run is the reference: it is the only run that keeps all 512 tokens. Quality is measured on every run, because a memory saving that costs accuracy is not a saving. See docs/benchmarks.md for how to read these results and docs/research.md for what has actually been established so far.",
+  "runs": [
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 512,
+      "attention_sinks": 0,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reference: no eviction, no compression, no offload"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "sliding_window",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reproduction of StreamingLLM-style window + attention sinks"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "lru",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "pure recency eviction, attention signals deliberately unused"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "attention_based",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reproduction of H2O-style heavy-hitter eviction"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "token_importance",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "weighted blend of attention, recency, frequency and position"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "adaptive",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "RESEARCH PROTOTYPE, not a validated method. Pressure-interpolated weights. A result here is a hypothesis, not a finding."
+    }
+  ]
+}

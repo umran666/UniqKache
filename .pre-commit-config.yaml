@@ -1,0 +1,35 @@
+# Install with: pre-commit install
+# Run manually:  pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Correctness of the cache layer is the whole project. Never let a commit
+      # land that breaks the fast unit suite.
+      - id: pytest-fast
+        name: pytest (unit + regression)
+        entry: python -m pytest tests/unit tests/regression -q
+        language: system
+        pass_filenames: false
+        always_run: true

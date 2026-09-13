@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use UniqKache in research, please cite it using the metadata below."
+title: "UniqKache: A Research Framework for Adaptive KV-Cache Management in Long-Context LLM Inference"
+abstract: >-
+  UniqKache is an open-source research framework for studying how inference-time
+  memory should be managed for long-context large language model inference. It
+  provides a correct, policy-agnostic KV-cache abstraction, reproductions of
+  established cache policies, a reproducible benchmark harness that reports
+  memory, latency and quality together, and infrastructure for contributor-driven
+  experiments. The project deliberately separates reproduced prior work from
+  engineering improvements and unvalidated research hypotheses.
+type: software
+authors:
+  - name: "UniqKache contributors"
+version: "0.0.1"
+date-released: "2026-09-13"
+license: "Apache-2.0"
+repository-code: "https://github.com/uniqkache/UniqKache"
+url: "https://github.com/uniqkache/UniqKache"
+keywords:
+  - kv-cache
+  - long-context
+  - llm-inference
+  - memory-management
+  - efficient-inference
+  - systems-for-ml
+preferred-citation:
+  type: article
+  title: "UniqKache: A Research Framework for Adaptive KV-Cache Management in Long-Context LLM Inference"
+  authors:
+    - name: "UniqKache contributors"
+  year: 2026
+  note: >-
+    Technical report / preprint pending. Until a paper exists, cite the software
+    artefact and the specific git commit used.

@@ -1,0 +1,118 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uniqkache"
+version = "0.0.1"
+description = "Research and implementation framework for adaptive KV-cache management in long-context LLM inference."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "UniqKache contributors" }]
+keywords = [
+    "kv-cache",
+    "long-context",
+    "llm-inference",
+    "memory-management",
+    "research",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# NOTE: torch is a hard dependency because the KV-cache storage layer operates on
+# tensors. Everything in `uniqkache.cache`, `uniqkache.policies` and
+# `uniqkache.runtime` is importable and testable without `transformers`.
+dependencies = ["torch>=2.0"]
+
+[project.optional-dependencies]
+hf = ["transformers>=4.40"]
+quality = ["datasets>=2.18"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+]
+docs = ["mkdocs>=1.5", "mkdocs-material>=9.5"]
+
+[project.urls]
+Homepage = "https://github.com/uniqkache/UniqKache"
+Repository = "https://github.com/uniqkache/UniqKache"
+Issues = "https://github.com/uniqkache/UniqKache/issues"
+Changelog = "https://github.com/uniqkache/UniqKache/blob/main/CHANGELOG.md"
+
+[project.scripts]
+uniqkache = "uniqkache.bench.cli:main"
+uniqkache-bench = "uniqkache.bench.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+uniqkache = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# Lets the test suite run straight from a checkout without an install step.
+# "." is included so tests can share helpers from tests/conftest.py.
+# An editable install (`make install-dev`) works too; both are supported so a
+# contributor is never blocked on packaging to run a test.
+pythonpath = ["src", "."]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: tests that take more than a few seconds",
+    "gpu: tests that require a CUDA device",
+    "integration: end-to-end inference tests",
+    "regression: tests pinning previously-fixed bugs",
+]
+filterwarnings = ["error::DeprecationWarning:uniqkache.*"]
+
+[tool.coverage.run]
+source = ["src/uniqkache"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "RET", # flake8-return
+    "PIE", # flake8-pie
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501", # line length is handled by the formatter
+    "B905", # zip() strict= is not available on all supported versions
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+"docs/**" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["uniqkache"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

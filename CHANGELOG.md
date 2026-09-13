@@ -37,7 +37,7 @@ Two project-specific conventions:
 - `uniqkache.bench` — `RunSpec`, `ExperimentConfig`, the runner, and the `uniqkache.bench` CLI
   with `--sweep` retention sweeps.
 - Tests: unit, integration (incremental decode equals a single-shot forward pass) and
-  regression suites. 291 tests, no GPU and no downloads required.
+  regression suites. 297 tests, no GPU and no downloads required.
 - Documentation: `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/research.md`
   (including a Failed Experiments section), `docs/benchmarks.md`, `benchmarks/README.md`,
   `baselines/README.md`.
@@ -64,6 +64,11 @@ Two project-specific conventions:
 
 ### Withdrawn
 
+- **Quality results for attention-based policies.** The quality pass did not record attention,
+  so `attention_based`, `token_importance` and `adaptive` were scored on a degenerate selection
+  rather than on the policy they implement. The bug is fixed; no committed result depended on
+  the affected numbers, but any number copied out of a pre-fix run must be discarded. See
+  `docs/research.md`, F13.
 - **Retention-sweep latency results.** The initial sweep reported a monotonic TTFT decrease as
   retention fell (43.2 → 33.9 ms) and it was briefly presented as a possible speedup. It did
   not reproduce: repeated runs varied more than the effect, and one fixed budget measured
@@ -92,6 +97,17 @@ Recorded in `docs/research.md` under Failed Experiments, each with a regression 
   the repository root.
 - `metrics.report` globbed `*.json`, which matched the `.config.json` files the runner writes
   beside every result, so `make results-table` failed on any directory the runner had populated.
+- `make benchmark` used `synthetic-tiny`, which is parsed as a Hugging Face repository id rather
+  than the built-in preset, and passed `sliding_window` with no budget, which `RunSpec` correctly
+  refuses. Both commands are fixed and the target now runs.
+- **The quality pass never recorded attention.** `metrics.quality.perplexity` discarded the
+  attention weights returned by the model, so `cum_attention` stayed all-zero for the whole
+  evaluation and every attention-based policy silently scored every token equally.
+  `token_importance` collapsed onto its recency terms and `attention_based` degenerated to
+  keeping the *oldest* tokens. Any quality number previously reported for `attention_based`,
+  `token_importance` or `adaptive` is invalid — see Withdrawn. `perplexity` now mirrors the
+  generation engine's signal plumbing, and a regression test asserts the diagnostic actually
+  discriminates between retention rules.
 
 ---
 

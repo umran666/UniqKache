@@ -460,6 +460,98 @@ it — record file *and* config file — rather than a convenient one.
 **Lesson:** a test fixture that is tidier than reality tests the fixture. The directory the
 tool will actually be pointed at has the runner's own by-products in it.
 
+### F12 — The Makefile's documented targets did not run
+
+**Expected:** `make benchmark`, `make bench-sweep` and `make results-table` are the project's
+front door. The README points at them, and CI runs the same commands.
+
+**Observed:** two of the three could not execute at all, and one could not execute correctly.
+
+- `make benchmark` used `MODEL ?= synthetic-tiny`. The synthetic presets are namespaced
+  (`synthetic:tiny`), so the hyphenated form is parsed as a Hugging Face repository id. The
+  target died with `could not load Hugging Face model 'synthetic-tiny' ... is not a valid
+  model identifier listed on 'https://huggingface.co/models'`.
+- The same target's second command passed `--policy sliding_window` with no budget, which
+  `RunSpec` correctly refuses: `policy 'sliding_window' evicts, but no budget was given`. The
+  target could never have completed.
+- `make results-table` was broken by F11.
+
+**Cause:** none of the targets had ever been run. They were written from the intended
+interface rather than executed against it, so a typo in a default and a missing required
+argument both survived. The test suite covers the library and the CLI; it does not execute the
+build file.
+
+**Fix:** the model default is `synthetic:tiny`; a `KEEP ?= 0.25` variable supplies the budget
+the evicting policy requires; `CTX` dropped from 4096 to 512, because quality is measured one
+token at a time and a 4k default is minutes of compute per run on a laptop GPU. All targets
+were then run individually.
+
+**Lesson:** a build file is documentation, and documentation that is never executed rots. The
+same applies to the README's quick-start block, which is why the commands in it were run too.
+This is the third class of defect found by verification rather than by tests — after F11
+(a tool that could not read its own output) and the `.gitignore` anchoring bug (a pattern that
+silently excluded source). All three were in the *scaffolding*, which is exactly the part of a
+project that reviewers read and nobody executes.
+
+### F13 — The quality pass never recorded attention, so attention-based policies were not run
+
+**Expected:** a quality measurement should exercise the same policy that the performance
+measurement exercised. If `attention_based` is being evaluated, it should be selecting tokens
+by attention.
+
+**Observed:** in a six-policy comparison at context 512 and a 25% budget, four policies
+returned **bit-identical** perplexity:
+
+```
+full_cache          1,062,912 B   521.9022
+sliding_window        262,144 B   518.0760
+lru                   262,144 B   518.0760
+attention_based       262,144 B   520.5250
+token_importance      262,144 B   518.0760
+adaptive              262,144 B   518.0760
+```
+
+Four different retention rules producing the same number to seven significant figures is not a
+finding about retention. It is a signal that the measurement is not distinguishing them.
+
+**Cause:** `metrics.quality.perplexity` called `model.forward(chunk, cache=cache,
+start_pos=start)` and **discarded the returned attention weights** (`logits, _ = ...`). It never
+called `cache.note_attention`. So for the entire quality pass `cum_attention` stayed all-zero,
+and every attention-based policy scored every token equally:
+
+- `token_importance` weights attention at 1.0, but with attention zeroed its score collapsed to
+  its recency and frequency terms, which happened to coincide with a recency-based selection —
+  hence the identical value shared with `sliding_window` and `lru`.
+- `attention_based` scores *only* on attention. With all scores equal, `select`'s stable
+  tie-break returned the lowest slot indices, so it kept the **oldest** tokens — the exact
+  opposite of its intent. That is why its number differed, and the difference was not the
+  policy working.
+
+The generation path *did* record attention (`GenerationEngine._absorb_attention`), so the
+performance measurement ran the real policy while the quality measurement ran a degenerate one.
+The two halves of every result were describing different policies.
+
+**Fix:** `perplexity` now mirrors the generation engine: it requests attention when the cache's
+policy declares `uses_attention`, and feeds it back per layer, choosing `all_queries` for a
+multi-token chunk and `last_query` for a single-token decode step. A non-attention policy still
+requests nothing, because materialising attention costs memory proportional to the context and
+would distort that policy's own memory measurement. A failure to record is logged, not
+swallowed.
+
+**What this invalidates:** every quality number previously reported for `attention_based`,
+`token_importance` or `adaptive`. No committed result depends on one — the correctness
+experiment uses a non-evicting budget, where the retained set is identical regardless of
+scoring, and the committed retention sweep covers `sliding_window` only. The six-policy
+comparison above was exploratory and is not committed.
+
+**Lesson:** this is the most dangerous bug found in the project, because it produced
+*plausible* numbers rather than an error. It was caught only because four unrelated policies
+agreed to seven digits, which is implausible enough to look at twice. The general form is worth
+stating: **when the measurement path and the performance path are separate code, they can
+diverge, and the result describes neither.** The guard against it is to make the two paths
+share the signal-plumbing code rather than reimplement it, and to check that a diagnostic
+actually discriminates between the things it is supposed to compare.
+
 ---
 
 ## Open Questions

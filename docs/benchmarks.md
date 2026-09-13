@@ -148,6 +148,12 @@ infinitely fast rather than as "not measured".
 Quality is evaluated **through a cache**, using the same code path as the measured run. A
 quality number produced by a different path is not evidence about that path.
 
+That includes the policy's *signals*: if a policy reads attention, the quality pass must record
+attention exactly as generation does. It did not, once — `cum_attention` stayed all-zero, and
+every attention-based policy silently scored every token equally, so four different retention
+rules returned bit-identical perplexity. The performance half of each result ran the real
+policy while the quality half ran a degenerate one. See `docs/research.md`, F13.
+
 ---
 
 ## Record schema

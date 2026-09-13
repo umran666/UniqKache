@@ -44,6 +44,44 @@ RANDOM_WEIGHT_CAVEAT = (
 )
 
 
+def _absorb_attention(
+    cache: KVCache,
+    weights: list[torch.Tensor] | None,
+    *,
+    num_queries: int,
+) -> None:
+    """Feed per-layer attention weights into the cache's signal bookkeeping.
+
+    Mirrors :meth:`uniqkache.runtime.generation.GenerationEngine._absorb_attention`,
+    so a policy sees the same signals during the quality pass as during
+    generation. If it did not, the quality number would describe a policy that
+    was never run -- which is precisely what happened before this existed; see
+    ``docs/research.md``, F13.
+
+    ``mode`` follows the chunk: more than one query position is a prefill-like
+    chunk and every query's attention counts, while a single query is a decode
+    step and only the last query's attention is meaningful.
+    """
+    if weights is None:
+        return
+    mode = "all_queries" if num_queries > 1 else "last_query"
+    for layer_idx, layer_weights in enumerate(weights):
+        try:
+            cache.note_attention(layer_idx, layer_weights, mode=mode)
+        except Exception as exc:
+            # Deliberately broad, and deliberately not silent: a length mismatch
+            # means the policy's view of the cache and the attention tensor
+            # disagree. That is a correctness problem, so it is reported rather
+            # than continuing with stale signals.
+            _log.warning(
+                "could not record attention for layer %d during quality evaluation "
+                "(%s); an attention-based policy will score this layer from stale "
+                "signals and the quality number will not describe that policy",
+                layer_idx,
+                exc,
+            )
+
+
 @dataclass
 class QualityResult:
     """A quality measurement together with what it does and does not mean."""
@@ -127,6 +165,15 @@ def perplexity(
     if chunk_size < 1:
         raise BackendError(f"chunk_size must be >= 1, got {chunk_size}")
 
+    # An attention-based policy must be fed attention here, exactly as it is
+    # during generation. Without this, `cum_attention` stays all-zero for the
+    # whole quality pass, and every attention-based policy silently scores every
+    # token equally -- which means the quality number describes a policy that
+    # was never actually run. See docs/research.md, F13.
+    record_attention = bool(cache is not None and cache.policy is not None) and bool(
+        cache.policy.uses_attention
+    )
+
     vocab_size = int(input_ids.max().item()) + 1
     total_loss = 0.0
     total_scored = 0
@@ -145,7 +192,10 @@ def perplexity(
             for start in range(0, seq_len, chunk_size):
                 end = min(start + chunk_size, seq_len)
                 chunk = input_ids[:, start:end]
-                logits, _ = model.forward(chunk, cache=cache, start_pos=start)
+                logits, weights = model.forward(
+                    chunk, cache=cache, start_pos=start, return_attention=record_attention
+                )
+                _absorb_attention(cache, weights, num_queries=end - start)
                 vocab_size = logits.shape[-1]
 
                 # Logit at absolute position p predicts the token at p+1. So this

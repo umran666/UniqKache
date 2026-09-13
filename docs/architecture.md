@@ -108,6 +108,13 @@ are pinned by a test.
 10. **Timing is synchronised.** `synchronize(device)` is called before every timing boundary,
     because CUDA launches are asynchronous.
 
+11. **The quality path feeds the same signals as the generation path.** If a policy reads
+    attention, both paths must record it. These are separate code paths — the generation loop
+    and the quality evaluator — and they *can* diverge, in which case the reported performance
+    describes one policy and the reported quality describes another. That happened once; see
+    `docs/research.md`, F13. The guard is a test asserting the diagnostic actually discriminates
+    between retention rules, not merely that it returns a number.
+
 ---
 
 ## The cache layer

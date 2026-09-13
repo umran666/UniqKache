@@ -28,7 +28,7 @@ from uniqkache.cache.types import CacheConfig
 from uniqkache.compression.quantize import Int8KVCompressor, quantize
 from uniqkache.metrics.quality import perplexity, random_token_ids
 from uniqkache.metrics.report import load_records, records_to_markdown
-from uniqkache.models.synthetic import build_model, get_preset
+from uniqkache.models.synthetic import build_cache_for_model, build_model, get_preset
 from uniqkache.policies import FullCachePolicy, SlidingWindowPolicy
 
 # ---------------------------------------------------------------------------
@@ -392,6 +392,86 @@ class TestResultsReporterRegression:
         # Quality is a mandatory column; a table without it would let a
         # memory/latency trade-off read as a win.
         assert "quality" in rendered.lower()
+
+
+# ---------------------------------------------------------------------------
+# Bug 7 — the quality pass discarded the attention weights, so `cum_attention`
+# stayed all-zero for the whole evaluation. Every attention-based policy then
+# scored every token equally and silently fell back to a deterministic tie
+# order, meaning the reported quality number described a policy that was never
+# actually run.
+#
+# The symptom was subtle rather than loud: four different policies
+# (sliding_window, lru, token_importance, adaptive) produced *bit-identical*
+# perplexity at an equal budget, which is not what four different retention
+# rules should do.
+# ---------------------------------------------------------------------------
+
+
+class TestQualityPassRecordsAttentionRegression:
+    """Pins: a policy that uses attention must be fed attention when scored."""
+
+    def _cache(self, policy_name: str, capacity: int = 8):
+        model = build_model(preset="tiny", device="cpu")
+        cache = build_cache_for_model(
+            model,
+            capacity=capacity,
+            attention_sinks=1,
+            policy_name=policy_name,
+            device="cpu",
+        )
+        return model, cache
+
+    def test_attention_accumulates_during_a_cached_perplexity_pass(self):
+        model, cache = self._cache("attention_based")
+        tokens = random_token_ids(model.config.vocab_size, 48, seed=0)
+
+        perplexity(model, tokens, cache=cache, chunk_size=1)
+
+        totals = [
+            float(cache.store.layer(i).metadata.cum_attention.abs().sum())
+            for i in range(model.config.num_layers)
+        ]
+        assert any(total > 0 for total in totals), (
+            "no attention was recorded during the quality pass; an attention-based "
+            "policy would have scored every token equally"
+        )
+
+    def test_a_non_attention_policy_does_not_pay_for_attention(self):
+        """The guard must not over-correct and materialise attention needlessly.
+
+        Materialising attention costs memory proportional to the context length,
+        so requesting it for a policy that does not read it would distort that
+        policy's own memory measurement.
+        """
+        model, cache = self._cache("sliding_window")
+        assert cache.policy is not None and not cache.policy.uses_attention
+
+        tokens = random_token_ids(model.config.vocab_size, 48, seed=0)
+        perplexity(model, tokens, cache=cache, chunk_size=1)
+
+        totals = [
+            float(cache.store.layer(i).metadata.cum_attention.abs().sum())
+            for i in range(model.config.num_layers)
+        ]
+        assert all(total == 0 for total in totals)
+
+    def test_the_quality_diagnostic_distinguishes_retention_rules(self):
+        """The point of the fix: two different rules must not score identically.
+
+        Before it, an attention-based policy and a recency-based policy could
+        return the same perplexity at the same budget, because neither was
+        reading attention.
+        """
+        values = {}
+        for policy_name in ("attention_based", "sliding_window"):
+            model, cache = self._cache(policy_name)
+            tokens = random_token_ids(model.config.vocab_size, 48, seed=0)
+            values[policy_name] = perplexity(model, tokens, cache=cache, chunk_size=1).value
+
+        assert values["attention_based"] is not None
+        assert values["sliding_window"] is not None
+        assert values["attention_based"] != values["sliding_window"]
 
 
 # ---------------------------------------------------------------------------

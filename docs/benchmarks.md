@@ -40,12 +40,21 @@ python -m uniqkache.bench \
     --model synthetic:tiny \
     --context-length 192 \
     --policy sliding_window \
-    --sweep
+    --sweep \
+    --max-new-tokens 2
 ```
 
 `--sweep` expands to five runs at 100 / 75 / 50 / 25 / 10 % retention. The 100 % run is a
 `full_cache` reference, and it records `attention_sinks = 0`, because a full cache has nothing
 to protect and recording a non-zero sink count there would be a meaningless number.
+
+`--max-new-tokens` is not a detail here. The bounded rows' budgets are computed from
+`--context-length` (192 × the ratio), but the `full_cache` reference occupancy is
+`context + generated - 1`, so the decode length sets the denominator of the `vs full` column.
+At the default of 8 the reference holds 199 tokens and the four ratios read 0.724 / 0.482 /
+0.241 / 0.095 rather than 0.746 / 0.497 / 0.249 / 0.098. The bounded rows themselves are
+unchanged — they are capacity-limited — so the drift is invisible unless you look at the
+reference row. See `docs/research.md`, F14.
 
 ### From a config file
 
@@ -81,7 +90,7 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--precision` | `float32` | `float32`, `float16` or `bfloat16`. |
 | `--device` | `auto` | `auto`, `cpu` or `cuda`. |
 | `--seed` | `0` | Random seed. |
-| `--max-new-tokens` | `8` | Decode steps. |
+| `--max-new-tokens` | `8` | Decode steps. Sets the `full_cache` reference occupancy to `context + generated - 1`, so it changes the `vs full` column in a sweep; see F14. |
 | `--compressor` | off | `int8` compresses the cache before generation. |
 | `--no-quality` | off | Skip quality. Strongly discouraged; the record will be flagged. |
 | `--quality-chunk-size` | `1` | Tokens per forward pass during quality evaluation. `1` reproduces true streaming decode. |

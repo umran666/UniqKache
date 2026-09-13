@@ -151,7 +151,8 @@ python -m uniqkache.bench \
     --model synthetic:tiny \
     --context-length 192 \
     --policy sliding_window \
-    --sweep
+    --sweep \
+    --max-new-tokens 2      # required to reproduce the retention table below; see F14
 ```
 
 Every run writes three files to `experiments/results/`: a `.jsonl` of records, a `.csv` of the

@@ -99,8 +99,9 @@ make bench-sweep          # experiments/configs/sweep_policies.json
 make bench-correctness    # experiments/configs/correctness.json
 
 # the standard retention sweep for one policy
+# `--max-new-tokens 2` is required to match the reference numbers below; see F14
 python -m uniqkache.bench --model synthetic:tiny --context-length 192 \
-    --policy sliding_window --sweep
+    --policy sliding_window --sweep --max-new-tokens 2
 
 # summarise whatever is in experiments/results
 make results-table

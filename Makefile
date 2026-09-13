@@ -5,10 +5,19 @@
 # same command.
 
 PYTHON ?= python
-MODEL  ?= synthetic-tiny
-CTX    ?= 4096
+# Note the colon: the synthetic presets are namespaced (`synthetic:tiny`), so
+# `synthetic-tiny` is treated as a Hugging Face repository id and fails with a
+# download error rather than running the built-in model.
+MODEL  ?= synthetic:tiny
+# 512 rather than a long-context default: quality is measured one token at a
+# time, so cost scales with the context and a 4k+ default is minutes of compute
+# per run on a laptop GPU. Override for a real long-context run on a real model.
+CTX    ?= 512
 POLICY ?= full_cache
 BATCH  ?= 1
+# An evicting policy must be given a budget: RunSpec refuses one without, because
+# a bounded cache with no budget has nothing to decide what to drop.
+KEEP   ?= 0.25
 OUTDIR ?= experiments/results
 
 .DEFAULT_GOAL := help
@@ -63,16 +72,21 @@ benchmark: ## Run the reference benchmark (full cache vs sliding window)
 		--model $(MODEL) \
 		--context-length $(CTX) \
 		--policy sliding_window \
+		--keep-ratio $(KEEP) \
 		--batch-size $(BATCH) \
 		--output-dir $(OUTDIR)
 
 .PHONY: bench-sweep
 bench-sweep: ## Run the configured policy x context sweep
-	$(PYTHON) -m uniqkache.bench --config experiments/configs/sweep_policies.json
+	$(PYTHON) -m uniqkache.bench \
+		--config experiments/configs/sweep_policies.json \
+		--output-dir $(OUTDIR)
 
 .PHONY: bench-correctness
 bench-correctness: ## Verify eviction policies preserve full-cache output where expected
-	$(PYTHON) -m uniqkache.bench --config experiments/configs/correctness.json
+	$(PYTHON) -m uniqkache.bench \
+		--config experiments/configs/correctness.json \
+		--output-dir $(OUTDIR)
 
 .PHONY: results-table
 results-table: ## Summarise collected results into a Markdown table

@@ -113,7 +113,7 @@ Verify the install:
 
 ```bash
 python -m uniqkache.bench --list-policies
-pytest -q                             # 291 tests, no GPU and no downloads required
+pytest -q                             # 297 tests, no GPU and no downloads required
 ```
 
 > **Note on multiple Python installs.** If `python` on your `PATH` is a different interpreter
@@ -163,19 +163,20 @@ Programmatic use:
 
 ```python
 import torch
-from uniqkache import KVCache, CacheConfig, build_policy
+from uniqkache import CacheConfig, KVCache, build_policy
 
 config = CacheConfig(
-    num_layers=4, num_kv_heads=2, head_dim=32, device="cuda",
+    num_layers=4, num_kv_heads=2, head_dim=32,
+    dtype=torch.float32, device="cuda",
     capacity=64, attention_sinks=4,
 )
-cache = KVCache(config, policy=build_policy("sliding_window", config=config))
+# The policy reads the budget and the sink count from the cache it is asked to
+# score, so it needs no configuration of its own. Pass `window=` to override.
+cache = KVCache(config, policy=build_policy("sliding_window"))
 
-keys = torch.randn(1, 2, 8, 32)
-values = torch.randn(1, 2, 8, 32)
-cache.append(layer_idx=0, keys=keys, values=values)
-
+cache.append(layer_idx=0, keys=torch.randn(1, 2, 8, 32), values=torch.randn(1, 2, 8, 32))
 print(cache.stats().summary())
+# tokens=8 util=12.5% mem=0.00MiB (device=0.00MiB, offloaded=0.00MiB) ...
 ```
 
 More: [examples/](examples/).

@@ -45,9 +45,13 @@ experiments/results/raw/
 experiments/results/*.tmp
 
 # --- Model / dataset caches ---
-.cache/
-hf_cache/
-models/
+# Anchored to the repository root on purpose. A bare `models/` pattern matches
+# a directory named `models` at *any* depth, which silently excluded
+# `src/uniqkache/models/` from the repository when this file was first written.
+/.cache/
+/hf_cache/
+/models/
+/datasets/
 
 # --- Secrets ---
 .env

@@ -37,7 +37,7 @@ Two project-specific conventions:
 - `uniqkache.bench` — `RunSpec`, `ExperimentConfig`, the runner, and the `uniqkache.bench` CLI
   with `--sweep` retention sweeps.
 - Tests: unit, integration (incremental decode equals a single-shot forward pass) and
-  regression suites. 297 tests, no GPU and no downloads required.
+  regression suites. 302 tests, no GPU and no downloads required.
 - Documentation: `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/research.md`
   (including a Failed Experiments section), `docs/benchmarks.md`, `benchmarks/README.md`,
   `baselines/README.md`.
@@ -108,6 +108,19 @@ Recorded in `docs/research.md` under Failed Experiments, each with a regression 
   `token_importance` or `adaptive` is invalid — see Withdrawn. `perplexity` now mirrors the
   generation engine's signal plumbing, and a regression test asserts the diagnostic actually
   discriminates between retention rules.
+- **A flaky timing assertion.** `test_timer_measures_elapsed_time` slept for 10 ms and asserted
+  the timer reported at least 10 ms. `time.sleep` is a minimum hint, not a promise, and the test
+  was measured failing at 8.39 ms. The body now busy-waits on `perf_counter`, so the asserted
+  interval is guaranteed rather than hoped for. The first attempt at the fix still failed — at
+  9.91 ms — because the deadline was taken before entering the timer, charging
+  `Timer.__enter__`'s synchronisation against the wait. Same lesson as the withdrawn latency
+  results, one level down: a timing assertion is only meaningful when the measurement is
+  reproducible at the scale being asserted.
+- `docs/**` in `per-file-ignores` was inert — `ruff check` does not read Markdown, so the ignore
+  could never fire. Removed rather than left to imply a check that is not running. `ruff format`
+  does rewrite Python inside `.md` code blocks, and was collapsing the intentional comment
+  alignment in `docs/architecture.md`; Markdown is now excluded from the formatter, since
+  reformatting prose that is never linted buys no correctness.
 
 ---
 

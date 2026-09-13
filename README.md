@@ -113,7 +113,7 @@ Verify the install:
 
 ```bash
 python -m uniqkache.bench --list-policies
-pytest -q                             # 297 tests, no GPU and no downloads required
+pytest -q                             # 302 tests, no GPU and no downloads required
 ```
 
 > **Note on multiple Python installs.** If `python` on your `PATH` is a different interpreter

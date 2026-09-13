@@ -426,6 +426,16 @@ relationship. The only defence is repetition, and the willingness to discard a r
 looked good. This is the most consequential failure recorded here, because the first version of
 it was written into the README as a finding.
 
+**The same mistake, one level down.** This lesson recurred inside the test suite: a timer test
+slept for 10 ms and asserted the timer reported at least 10 ms, on the assumption that
+`time.sleep` honours the duration it is given. It does not — it is a minimum hint, and on
+Windows the ~15.6 ms timer granularity makes an early return routine. The test was measured
+failing at 8.39 ms. It is worth recording because a flaky assertion is *worse* than a missing
+one: it fails for reasons unrelated to the code under test, so it trains you to ignore red. The
+test now busy-waits on `perf_counter` so the interval is guaranteed rather than hoped for — and
+the first attempt at that fix still failed, at 9.91 ms, because the deadline was taken before
+entering the timer and so charged `Timer.__enter__`'s synchronisation against the wait.
+
 **What this does not affect:** memory accounting (arithmetic, exact to the byte) and quality
 (bit-reproducible — perplexity was identical to all printed digits across two independent
 sweeps). Only the timing columns were withdrawn.

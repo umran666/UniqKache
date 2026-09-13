@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 import torch
@@ -154,13 +155,49 @@ class TestLatency:
         assert throughput(10, 0.0) is None
         assert throughput(10, 1000.0) == pytest.approx(10.0)
 
-    def test_timer_measures_elapsed_time(self):
-        import time
+    def test_timer_elapsed_is_none_until_used(self):
+        # A timer that has not run must not report a duration; ``0.0`` would be
+        # indistinguishable from an instantaneous measurement.
+        assert Timer("cpu").elapsed_ms is None
 
+    @staticmethod
+    def _burn(seconds: float) -> None:
+        """Busy-wait until ``seconds`` of wall clock have actually passed.
+
+        Deliberately not ``time.sleep``. ``sleep`` is a *minimum* hint that the
+        OS may cut short -- on Windows the ~15.6 ms timer granularity makes an
+        early return routine, and the previous version of this test was measured
+        failing at 8.39 ms for a requested 10 ms.
+
+        The deadline is taken *inside* the caller's timing block on purpose. If
+        it were computed before entering the block, the ``synchronize`` in
+        ``Timer.__enter__`` would be charged against the wait and the body would
+        consume slightly less than requested -- which is how the first rewrite
+        of this test still managed to fail, at 9.91 ms.
+        """
+        deadline = time.perf_counter() + seconds
+        while time.perf_counter() < deadline:
+            pass
+
+    def test_timer_measures_elapsed_time(self):
+        # Spin for double the asserted duration, so ordinary scheduling jitter
+        # cannot push the measurement below the bound.
         with Timer("cpu") as timer:
-            time.sleep(0.01)
+            self._burn(0.02)
         assert timer.elapsed_ms is not None
         assert timer.elapsed_ms >= 10.0
+
+    def test_timer_elapsed_grows_with_the_body(self):
+        # The stronger property: the timer tracks the work done, not a constant.
+        def measure(seconds: float) -> float:
+            with Timer("cpu") as timer:
+                self._burn(seconds)
+            assert timer.elapsed_ms is not None
+            return timer.elapsed_ms
+
+        short = measure(0.005)
+        long = measure(0.050)
+        assert long > short
 
 
 # ---------------------------------------------------------------------------

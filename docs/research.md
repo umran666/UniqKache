@@ -430,6 +430,36 @@ it was written into the README as a finding.
 (bit-reproducible — perplexity was identical to all printed digits across two independent
 sweeps). Only the timing columns were withdrawn.
 
+### F11 — The results reporter could not read the runner's own output
+
+**Expected:** `python -m uniqkache.metrics.report --input experiments/results --format
+markdown` — the command behind `make results-table` — summarises the collected results.
+
+**Observed:**
+
+```
+WARNING ignoring unknown field(s) ['name', 'problems', 'runs'] ...
+TypeError: BenchmarkRecord.__init__() missing 1 required positional argument: 'run_id'
+```
+
+**Cause:** the reporter globbed `*.json`, which matches the
+`<name>-<timestamp>.config.json` file that `write_results` writes *beside* every result. A
+config file is not a record: it carries `name`, `runs` and `problems`, and no `run_id`. The
+unknown-field warning was the only clue before the crash.
+
+The failure was embarrassing in a specific way: the command was broken on precisely the
+directory it exists to read — one the runner had populated itself. It survived the test suite
+because the existing tests built directories containing only `.jsonl` files, so the config file
+was never present.
+
+**Fix:** the reporter excludes `.config.json` and stays non-recursive, so withdrawn results
+under `superseded/` are not folded into a current summary. Covered by
+`TestResultsReporterRegression`, which builds a directory shaped exactly as the runner writes
+it — record file *and* config file — rather than a convenient one.
+
+**Lesson:** a test fixture that is tidier than reality tests the fixture. The directory the
+tool will actually be pointed at has the runner's own by-products in it.
+
 ---
 
 ## Open Questions

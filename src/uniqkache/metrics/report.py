@@ -24,6 +24,14 @@ _log = get_logger(__name__)
 
 RESULT_GLOBS = ("*.jsonl", "*.json")
 
+# Experiment configs are written next to the results they produced
+# (`<name>-<timestamp>.config.json`). They are not records, and they cannot be
+# parsed as one: they carry `name`, `runs` and `problems`, and no `run_id`.
+# Without this exclusion, a results directory that the runner itself populated
+# fails to summarise -- which is the only kind of directory this command is
+# pointed at.
+EXCLUDED_SUFFIXES = (".config.json",)
+
 
 def load_records(path: str | Path) -> list[BenchmarkRecord]:
     """Load benchmark records from a file or a directory.
@@ -47,6 +55,10 @@ def load_records(path: str | Path) -> list[BenchmarkRecord]:
     if path.is_dir():
         for pattern in RESULT_GLOBS:
             files.extend(sorted(path.glob(pattern)))
+        # Deliberately non-recursive: `superseded/` holds withdrawn results, and
+        # folding those into a current summary would misreport the project's
+        # state. They stay readable by pointing --input at them directly.
+        files = [f for f in files if not f.name.endswith(EXCLUDED_SUFFIXES)]
     else:
         files = [path]
 

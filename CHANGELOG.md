@@ -87,6 +87,11 @@ Recorded in `docs/research.md` under Failed Experiments, each with a regression 
 - The prefetch registry did not register its default policy, and registering it in place would
   have created an import cycle.
 - `--sweep` validated a budget-less single spec before expanding, rejecting valid sweeps.
+- `.gitignore`'s bare `models/` pattern matched `src/uniqkache/models/`, silently excluding the
+  model backends from the repository. Ignore patterns for cache directories are now anchored to
+  the repository root.
+- `metrics.report` globbed `*.json`, which matched the `.config.json` files the runner writes
+  beside every result, so `make results-table` failed on any directory the runner had populated.
 
 ---
 

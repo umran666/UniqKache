@@ -12,7 +12,9 @@ change that fixes it. See CONTRIBUTING.md.
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import pytest
 import torch
@@ -25,6 +27,7 @@ from uniqkache.cache.store import _gather_quantized
 from uniqkache.cache.types import CacheConfig
 from uniqkache.compression.quantize import Int8KVCompressor, quantize
 from uniqkache.metrics.quality import perplexity, random_token_ids
+from uniqkache.metrics.report import load_records, records_to_markdown
 from uniqkache.models.synthetic import build_model, get_preset
 from uniqkache.policies import FullCachePolicy, SlidingWindowPolicy
 
@@ -322,6 +325,73 @@ class TestPublicApiRegression:
 
     def test_bench_cli_is_importable(self):
         from uniqkache.bench.cli import main  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Bug 6 — the results reporter globbed `*.json`, which matches the
+# `<name>-<timestamp>.config.json` files the runner writes beside every result.
+# Those are experiment configs, not records: they carry `name`, `runs` and
+# `problems` and no `run_id`, so parsing one raised
+# `TypeError: missing 1 required positional argument: 'run_id'`.
+#
+# The symptom was that `make results-table` failed on precisely the directory
+# it is designed to be pointed at -- one the runner had populated itself.
+# ---------------------------------------------------------------------------
+
+
+class TestResultsReporterRegression:
+    """Pins: a runner-populated results directory must be summarisable."""
+
+    def _write_runner_output(self, directory: Path) -> None:
+        """Write a results directory shaped exactly as the runner writes it."""
+        directory.mkdir(parents=True, exist_ok=True)
+        record = {
+            "run_id": "full_cache-synthetic:tiny-128-deadbeef",
+            "schema_version": "1.0.0",
+            "model": "synthetic:tiny",
+            "policy": "full_cache",
+            "context_length": 128,
+            "generated_tokens": 4,
+            "ttft_ms": 10.0,
+            "tpot_ms": 1.0,
+            "tokens_per_second": 100.0,
+            "quality_metric": "perplexity",
+            "quality_value": 500.0,
+        }
+        (directory / "run-20260101-000000.jsonl").write_text(
+            json.dumps(record) + "\n", encoding="utf-8"
+        )
+        (directory / "run-20260101-000000.config.json").write_text(
+            json.dumps(
+                {
+                    "name": "single-run",
+                    "runs": [{"model": "synthetic:tiny", "policy": "full_cache"}],
+                    "problems": {"full_cache-synthetic:tiny-128-deadbeef": ["a warning"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_runner_populated_directory_loads(self, tmp_path: Path):
+        self._write_runner_output(tmp_path)
+        records = load_records(tmp_path)
+        assert len(records) == 1
+        assert records[0].policy == "full_cache"
+
+    def test_the_config_file_is_never_parsed_as_a_record(self, tmp_path: Path):
+        self._write_runner_output(tmp_path)
+        # The exact failure mode: `name`/`runs`/`problems` are not record fields,
+        # and `run_id` is absent. Loading must not reach that code path at all.
+        records = load_records(tmp_path)
+        assert all(record.run_id for record in records)
+
+    def test_it_renders_a_markdown_table_with_a_quality_column(self, tmp_path: Path):
+        self._write_runner_output(tmp_path)
+        rendered = records_to_markdown(load_records(tmp_path))
+        assert "full_cache" in rendered
+        # Quality is a mandatory column; a table without it would let a
+        # memory/latency trade-off read as a win.
+        assert "quality" in rendered.lower()
 
 
 # ---------------------------------------------------------------------------

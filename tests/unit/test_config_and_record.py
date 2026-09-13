@@ -335,3 +335,47 @@ class TestReporting:
     def test_load_records_from_a_missing_path_is_reported(self, tmp_path: Path):
         with pytest.raises(ConfigError, match="does not exist"):
             load_records(tmp_path / "nope")
+
+    def test_load_records_skips_experiment_config_files(self, tmp_path: Path):
+        """Regression: the runner writes `.config.json` beside every result.
+
+        Those files carry `name`, `runs` and `problems` and no `run_id`, so
+        parsing one as a record raised `TypeError: missing 'run_id'`. The
+        command was therefore broken on exactly the directory it is pointed at
+        -- one the runner had populated itself.
+        """
+        (tmp_path / "run-20260101-000000.jsonl").write_text(
+            json.dumps(good_record().to_dict()) + "\n", encoding="utf-8"
+        )
+        (tmp_path / "run-20260101-000000.config.json").write_text(
+            json.dumps(
+                {
+                    "name": "some-experiment",
+                    "runs": [{"model": "synthetic:tiny", "policy": "full_cache"}],
+                    "problems": {"r1": ["something"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        records = load_records(tmp_path)
+        assert len(records) == 1
+        assert records[0].run_id == "r1"
+
+    def test_load_records_does_not_descend_into_subdirectories(self, tmp_path: Path):
+        """Superseded results must not be folded into a current summary.
+
+        Withdrawn results live in `experiments/results/superseded/`. Including
+        them would misreport the project's current state, so loading stays
+        non-recursive and they are read only by pointing --input at them.
+        """
+        (tmp_path / "current.jsonl").write_text(
+            json.dumps(good_record().to_dict()) + "\n", encoding="utf-8"
+        )
+        superseded = tmp_path / "superseded"
+        superseded.mkdir()
+        (superseded / "old.jsonl").write_text(
+            json.dumps(good_record(run_id="withdrawn").to_dict()) + "\n", encoding="utf-8"
+        )
+        records = load_records(tmp_path)
+        assert len(records) == 1
+        assert records[0].run_id == "r1"

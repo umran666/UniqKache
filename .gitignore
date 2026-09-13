@@ -57,3 +57,8 @@ experiments/results/*.tmp
 .env
 *.pem
 *.key
+
+# --- Local assistant / editor state ---
+# Local working notes and session state. Useful on this machine, machine-specific,
+# and not part of the research record, so it stays out of the repository.
+.workbuddy-ai/

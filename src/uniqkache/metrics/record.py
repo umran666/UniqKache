@@ -290,6 +290,26 @@ def validate_record(record: BenchmarkRecord) -> list[str]:
             "see docs/research.md."
         )
 
+    # A compressor was claimed but the record shows no evidence it was applied.
+    # This catches both a missing ratio (None) and a non-reducing ratio (<= 1.0) —
+    # the original failure mode was a record that said "int8" while bytes were
+    # unchanged and the ratio stayed at 1.0 or was never recorded at all.
+    if record.compressor is not None and (
+        record.cache_compression_ratio is None or record.cache_compression_ratio <= 1.0
+    ):
+        if record.cache_compression_ratio is None:
+            problems.append(
+                f"compressor {record.compressor!r} is configured but "
+                "cache_compression_ratio is missing from the record, which means "
+                "compression was configured but never produced a measurable reduction"
+            )
+        else:
+            problems.append(
+                f"compressor {record.compressor!r} is recorded but "
+                f"cache_compression_ratio={record.cache_compression_ratio}, which means "
+                "compression was configured but produced no size reduction"
+            )
+
     return problems
 
 

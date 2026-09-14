@@ -199,6 +199,13 @@ class GenerationEngine:
         generated.append(next_token)
         self.cache.advance()
 
+        # Apply any configured compression before decode. The store's
+        # ``layer.keys`` / ``layer.values`` properties auto-decompress on
+        # read, so the decode loop still sees float K/V regardless of the
+        # resident representation.
+        if self.cache.compressor is not None:
+            self.cache.compress()
+
         # ---- decode ------------------------------------------------------
         decode_start = time.perf_counter()
         for step in range(1, self.config.max_new_tokens):

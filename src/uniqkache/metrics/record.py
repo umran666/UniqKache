@@ -290,6 +290,20 @@ def validate_record(record: BenchmarkRecord) -> list[str]:
             "see docs/research.md."
         )
 
+    # A compressor was claimed but the record shows no evidence it was applied.
+    if (
+        record.compressor is not None
+        and record.cache_compression_ratio is not None
+        and record.cache_compression_ratio <= 1.0
+    ):
+        problems.append(
+            f"compressor {record.compressor!r} is recorded but "
+            f"cache_compression_ratio={record.cache_compression_ratio}, which means "
+            "compression was configured but produced no size reduction. Either the "
+            "compressor should be applied (see bench/runner.py) or it should be removed "
+            "from the spec."
+        )
+
     return problems
 
 

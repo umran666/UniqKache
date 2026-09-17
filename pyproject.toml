@@ -40,6 +40,7 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.6",
+    "mypy>=1.10",
 ]
 docs = ["mkdocs>=1.5", "mkdocs-material>=9.5"]
 
@@ -121,3 +122,10 @@ indent-style = "space"
 # formatter collapses. `ruff check` does not read Markdown at all, so formatting
 # it buys no correctness: it only reflows prose. Verified with `ruff 0.16.3`.
 exclude = ["*.md"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/uniqkache"]
+ignore_missing_imports = true
+warn_unused_configs = true
+warn_redundant_casts = true

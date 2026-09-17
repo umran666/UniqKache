@@ -57,7 +57,7 @@ format: ## Auto-format with ruff
 	$(PYTHON) -m ruff check --fix src tests benchmarks examples
 
 .PHONY: typecheck
-typecheck: ## Static type check (requires mypy)
+typecheck: ## Static type check with mypy
 	$(PYTHON) -m mypy src/uniqkache
 
 .PHONY: benchmark

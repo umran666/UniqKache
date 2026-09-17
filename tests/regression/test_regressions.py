@@ -558,6 +558,106 @@ class TestEvictAccountingRegression:
 
 
 # ---------------------------------------------------------------------------
+# Bug 10 — the HF model revision was present in the record schema but could not
+# be specified in a run and was therefore never forwarded to the loader.
+# ---------------------------------------------------------------------------
+
+
+class TestHFRevisionPropagationRegression:
+    """Pins: a RunSpec revision reaches the HF loader without downloading."""
+
+    def test_run_spec_revision_reaches_hf_loader(self, monkeypatch):
+        from typing import ClassVar
+
+        from uniqkache.models import hf_backend
+
+        spec = RunSpec(model="org/model", model_revision="abc123", policy="full_cache")
+        captured = {}
+
+        class StubBackend:
+            identifier = spec.model
+            revision = spec.model_revision
+            tokenizer = None
+            weights_are_random = False
+            vocab_size = 32
+            num_parameters = 7
+            config: ClassVar[dict[str, object]] = {"stub": True}
+
+        def stub_from_pretrained(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return StubBackend()
+
+        monkeypatch.setattr(hf_backend.HFBackend, "from_pretrained", stub_from_pretrained)
+
+        built = hf_backend.build_hf_model(spec, dtype=torch.float32, device="cpu")
+
+        assert captured == {
+            "model_id": "org/model",
+            "dtype": torch.float32,
+            "device": "cpu",
+            "revision": "abc123",
+            "local_files_only": False,
+        }
+        assert built.revision == "abc123"
+
+    def test_revision_round_trips_through_experiment_config(self):
+        from uniqkache.bench.config import ExperimentConfig
+
+        config = ExperimentConfig.from_dict(
+            {
+                "name": "pinned",
+                "runs": [
+                    {
+                        "model": "org/model",
+                        "model_revision": "v1.2.3",
+                        "policy": "full_cache",
+                    }
+                ],
+            }
+        )
+
+        restored = ExperimentConfig.from_dict(config.to_dict())
+        assert restored.runs[0].model_revision == "v1.2.3"
+
+    def test_model_revision_populated_in_record_for_hf_runs(self, monkeypatch):
+        from typing import ClassVar
+
+        from uniqkache.metrics.record import build_record
+        from uniqkache.models import hf_backend
+
+        spec = RunSpec(
+            model="org/model",
+            model_revision="commit-sha-456",
+            policy="full_cache",
+        )
+
+        class StubBackend:
+            identifier = spec.model
+            revision = spec.model_revision
+            tokenizer = None
+            weights_are_random = False
+            vocab_size = 32
+            num_parameters = 7
+            config: ClassVar[dict[str, object]] = {"stub": True}
+
+        monkeypatch.setattr(
+            hf_backend.HFBackend,
+            "from_pretrained",
+            lambda model_id, **kwargs: StubBackend(),
+        )
+
+        built = hf_backend.build_hf_model(spec, dtype=torch.float32, device="cpu")
+        record = build_record(
+            run_id="test-run",
+            model=built.identifier,
+            model_revision=built.revision,
+        )
+        assert record.model == "org/model"
+        assert record.model_revision == "commit-sha-456"
+
+
+# ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------
 

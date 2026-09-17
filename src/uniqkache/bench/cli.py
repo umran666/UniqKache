@@ -73,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
         "model; anything else is treated as a Hugging Face repo id. Default: %(default)s",
     )
     parser.add_argument(
+        "--model-revision",
+        default=None,
+        help="Hugging Face model revision (branch, tag, or commit hash). Default: %(default)s",
+    )
+    parser.add_argument(
         "--context-length",
         type=int,
         default=1024,
@@ -190,6 +195,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
     """Build a RunSpec from CLI arguments."""
     return RunSpec(
         model=args.model,
+        model_revision=args.model_revision,
         policy=args.policy,
         context_length=args.context_length,
         batch_size=args.batch_size,
@@ -259,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                 dataset=args.dataset,
                 measure_quality=not args.no_quality,
                 quality_chunk_size=args.quality_chunk_size,
+                model_revision=args.model_revision,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

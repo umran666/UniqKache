@@ -49,6 +49,9 @@ class RunSpec:
         gets recorded.
     context_length:
         Prompt length in tokens.
+    model_revision:
+        Hugging Face model revision (branch, tag, or commit) to load. Ignored by
+        the synthetic backend.
     keep_ratio:
         Fraction of ``context_length`` to retain. ``1.0`` is a full cache,
         ``0.25`` keeps a quarter. Mutually exclusive with ``capacity``. This is
@@ -60,6 +63,7 @@ class RunSpec:
     """
 
     model: str = "synthetic:tiny"
+    model_revision: str | None = None
     policy: str = "full_cache"
     context_length: int = 1024
     batch_size: int = 1

@@ -58,6 +58,11 @@ class TestRunSpec:
     def test_full_cache_without_a_budget_is_allowed(self):
         assert RunSpec(policy="full_cache", context_length=1024).resolved_capacity is None
 
+    def test_model_revision_is_accepted(self):
+        spec = RunSpec(model="org/model", model_revision="v1.2.3")
+        assert spec.model_revision == "v1.2.3"
+        assert spec.to_dict()["model_revision"] == "v1.2.3"
+
     def test_unknown_policy_is_rejected(self):
         with pytest.raises(ConfigError, match="unknown policy"):
             RunSpec(policy="nope", context_length=1024, keep_ratio=0.5)
@@ -367,3 +372,12 @@ class TestReporting:
         records = load_records(tmp_path)
         assert len(records) == 1
         assert records[0].run_id == "r1"
+
+    def test_cli_model_revision_flag_populates_run_spec(self):
+        from uniqkache.bench.cli import _spec_from_args, build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["--model", "org/model", "--model-revision", "v2.0.0"])
+        spec = _spec_from_args(args)
+        assert spec.model == "org/model"
+        assert spec.model_revision == "v2.0.0"

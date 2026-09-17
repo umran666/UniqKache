@@ -154,7 +154,7 @@ class LayerStorage:
         if self._keys is not None:
             return self._keys.device
         if self._compressed is not None:
-            return self._compressed.keys.data.device  # type: ignore[union-attr]
+            return self._compressed.keys.data.device  # type: ignore[union-attr,attr-defined]
         return self.device
 
     def bytes(self) -> int:
@@ -264,8 +264,9 @@ class LayerStorage:
         if self._keys is None:
             self._keys, self._values = keys, values
         else:
+            assert self._keys is not None and self._values is not None
             self._keys = torch.cat([self._keys, keys], dim=2)
-            self._values = torch.cat([self._values, values], dim=2)  # type: ignore[arg-type]
+            self._values = torch.cat([self._values, values], dim=2)
 
         self.metadata.append(num_new, positions=positions, step=step)
         self._offloaded = False

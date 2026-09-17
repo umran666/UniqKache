@@ -170,8 +170,8 @@ def perplexity(
     # whole quality pass, and every attention-based policy silently scores every
     # token equally -- which means the quality number describes a policy that
     # was never actually run. See docs/research.md, F13.
-    record_attention = bool(cache is not None and cache.policy is not None) and bool(
-        cache.policy.uses_attention
+    record_attention = bool(
+        cache is not None and cache.policy is not None and cache.policy.uses_attention
     )
 
     vocab_size = int(input_ids.max().item()) + 1

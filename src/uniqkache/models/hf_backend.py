@@ -288,7 +288,11 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
     from uniqkache.bench.runner import _BuiltModel  # local import avoids a cycle
 
     backend = HFBackend.from_pretrained(
-        spec.model, dtype=dtype, device=device, local_files_only=False
+        spec.model,
+        dtype=dtype,
+        device=device,
+        revision=spec.model_revision,
+        local_files_only=False,
     )
 
     def cache_config_factory(

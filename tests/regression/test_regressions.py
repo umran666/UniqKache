@@ -708,6 +708,31 @@ class TestCompressorIsNotASilentNoOp:
         assert any("compression that is not visible" in p for p in problems)
 
 
+class TestCompressorRunnerRegression:
+    """Pins: compressor in benchmark runs must yield real byte reduction via the runner."""
+
+    def test_compressor_int8_in_runner_produces_byte_reduction(self):
+        from uniqkache.bench.runner import run_spec
+
+        spec = RunSpec(
+            model="synthetic:tiny",
+            policy="full_cache",
+            context_length=64,
+            max_new_tokens=2,
+            compressor="int8",
+        )
+        outcome = run_spec(spec)
+        record = outcome.record
+
+        assert record.compressor == "int8"
+        assert record.cache_compression_ratio is not None
+        assert record.cache_compression_ratio > 1.0
+        # 66 tokens across 4 layers in float32 is 135,168 bytes
+        uncompressed_bytes = 4 * 2 * 1 * 2 * 66 * 32 * 4
+        assert record.cache_bytes_total is not None
+        assert record.cache_bytes_total < uncompressed_bytes
+
+
 # ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------

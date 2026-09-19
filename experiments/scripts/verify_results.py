@@ -24,6 +24,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -62,10 +63,8 @@ def _records_by_config(results_dir: Path) -> dict[str, dict[str, dict]]:
         source_config_name: str | None = None
         config_path = results_dir / f"{base}.config.json"
         if config_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 source_config_name = json.loads(config_path.read_text(encoding="utf-8")).get("name")
-            except Exception:
-                pass
         source_config_name = source_config_name or base
         records: dict[str, dict] = {}
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -114,9 +113,7 @@ def main() -> int:
             )
             committed = committed_by_config.get(config_name)
             if committed is None:
-                failures.append(
-                    f"no committed baseline for {config_name}; cannot verify"
-                )
+                failures.append(f"no committed baseline for {config_name}; cannot verify")
                 continue
             for outcome in outcomes:
                 fresh = outcome.record

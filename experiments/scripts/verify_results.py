@@ -96,7 +96,6 @@ def main() -> int:
                 config,
                 output_dir=Path(output_dir) / config_name,
                 write=True,
-                reference_memo={},
             )
             for outcome in outcomes:
                 fresh = outcome.record

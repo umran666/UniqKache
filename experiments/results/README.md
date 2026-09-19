@@ -136,3 +136,26 @@ research event, and `CHANGELOG.md` asks for it to be recorded rather than quietl
 
 Commit each experiment separately. `git_dirty` is read before the output is written, so
 regenerating both in one dirty tree would mark the second one dirty for no reason.
+
+## Verifying results against drift (`make verify-results`)
+
+To mechanically verify that the committed results reproduce without numerical drift:
+
+```bash
+make verify-results
+# or directly:
+python experiments/scripts/verify_results.py --results-dir experiments/results
+```
+
+Why this exists (F14): documented commands can succeed while producing drifting numbers (e.g.
+omitted `--max-new-tokens 2` silently shifted the reference row). Re-running the configs and
+diffing against committed artifacts is the mechanical guard against that drift.
+
+- **Quality fields must match exactly:** `quality_value`, `quality_reference`, `policy`,
+  `capacity`, `context_length`, and `cache_final_tokens` are strictly checked.
+- **Timing fields are excluded by design:** `ttft_ms`, `tpot_ms`, `tokens_per_second`, and
+  `peak_memory_bytes` vary with hardware clock and power state (F10), so they are excluded
+  from the diff with that exclusion and its rationale stated in the output.
+
+CI runs `make verify-results` on every PR, and `CONTRIBUTING.md` requires it before any
+results-changing PR merges.

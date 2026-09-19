@@ -363,3 +363,45 @@ class TestOutputFlags:
         out = capsys.readouterr().out
         assert "full_cache" in out
         assert "sliding_window" in out
+
+
+class TestOfflineFlag:
+    def test_offline_flag_is_parsed_in_single_run(self, monkeypatch):
+        captured_specs = []
+
+        def mock_run_config(config, **kwargs):
+            captured_specs.extend(config.runs)
+            return []
+
+        monkeypatch.setattr("uniqkache.bench.cli.run_config", mock_run_config)
+
+        main(["--model", "synthetic:tiny", "--offline"])
+        assert len(captured_specs) == 1
+        assert captured_specs[0].offline is True
+
+    def test_offline_flag_defaults_to_false(self, monkeypatch):
+        captured_specs = []
+
+        def mock_run_config(config, **kwargs):
+            captured_specs.extend(config.runs)
+            return []
+
+        monkeypatch.setattr("uniqkache.bench.cli.run_config", mock_run_config)
+
+        main(["--model", "synthetic:tiny"])
+        assert len(captured_specs) == 1
+        assert captured_specs[0].offline is False
+
+    def test_offline_flag_is_forwarded_in_sweep(self, monkeypatch):
+        captured_specs = []
+
+        def mock_run_config(config, **kwargs):
+            captured_specs.extend(config.runs)
+            return []
+
+        monkeypatch.setattr("uniqkache.bench.cli.run_config", mock_run_config)
+
+        main(["--model", "synthetic:tiny", "--policy", "sliding_window", "--sweep", "--offline"])
+        assert len(captured_specs) > 1
+        for spec in captured_specs:
+            assert spec.offline is True

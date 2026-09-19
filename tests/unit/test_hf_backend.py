@@ -138,3 +138,67 @@ class TestEvictionRefusal:
         with pytest.raises(Exception) as excinfo:
             backend.forward(torch.randint(0, 128, (1, 4)), cache=cache, start_pos=0)
         assert HF_EVICTION_NOT_SUPPORTED not in str(excinfo.value)
+
+
+class TestOfflineResolution:
+    def test_build_hf_model_forwards_spec_offline_to_local_files_only(self, monkeypatch):
+        from uniqkache.bench.config import RunSpec
+        from uniqkache.models.hf_backend import build_hf_model
+
+        spec = RunSpec(model="org/test-model", offline=True, policy="full_cache")
+        captured = {}
+
+        def mock_from_pretrained(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return HFBackend(_StubModel(), identifier=model_id)
+
+        monkeypatch.setattr(HFBackend, "from_pretrained", mock_from_pretrained)
+
+        built = build_hf_model(spec, dtype=torch.float32, device="cpu")
+        assert captured["local_files_only"] is True
+        assert built.is_hf_backend is True
+
+    def test_from_pretrained_passes_local_files_only_to_transformers(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_transformers = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_model = _StubModel()
+
+        mock_transformers.AutoTokenizer.from_pretrained.return_value = mock_tokenizer
+        mock_transformers.AutoModelForCausalLM.from_pretrained.return_value = mock_model
+
+        monkeypatch.setattr(
+            "uniqkache.models.hf_backend._require_transformers",
+            lambda: mock_transformers,
+        )
+
+        HFBackend.from_pretrained("org/test-model", local_files_only=True)
+
+        mock_transformers.AutoTokenizer.from_pretrained.assert_called_once_with(
+            "org/test-model", revision=None, local_files_only=True
+        )
+        mock_transformers.AutoModelForCausalLM.from_pretrained.assert_called_once_with(
+            "org/test-model", revision=None, dtype=torch.float32, local_files_only=True
+        )
+
+    def test_from_pretrained_raises_backend_error_when_offline_and_missing(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_transformers = MagicMock()
+        mock_transformers.AutoTokenizer.from_pretrained.side_effect = OSError(
+            "Offline mode is enabled and file not found in local cache"
+        )
+
+        monkeypatch.setattr(
+            "uniqkache.models.hf_backend._require_transformers",
+            lambda: mock_transformers,
+        )
+
+        with pytest.raises(BackendError) as excinfo:
+            HFBackend.from_pretrained("org/missing-model", local_files_only=True)
+
+        assert "local_files_only=True" in str(excinfo.value)
+        assert "org/missing-model" in str(excinfo.value)
+        assert isinstance(excinfo.value.__cause__, OSError)

@@ -659,6 +659,134 @@ class TestHFRevisionPropagationRegression:
 
 
 # ---------------------------------------------------------------------------
+# Bug 13 — Benchmark runs reached the network unconditionally and did not record it.
+# An --offline flag must be threaded from RunSpec to from_pretrained (local_files_only),
+# and the record must state whether the model was resolved offline.
+# ---------------------------------------------------------------------------
+
+
+class TestOfflineNetworkHonestyRegression:
+    """Pins: --offline threads to local_files_only, and record states offline resolution."""
+
+    def test_run_spec_offline_reaches_hf_loader(self, monkeypatch):
+        from typing import ClassVar
+
+        from uniqkache.models import hf_backend
+
+        spec = RunSpec(model="org/model", offline=True, policy="full_cache")
+        captured = {}
+
+        class StubBackend:
+            identifier = spec.model
+            revision = spec.model_revision
+            tokenizer = None
+            weights_are_random = False
+            vocab_size = 32
+            num_parameters = 7
+            config: ClassVar[dict[str, object]] = {"stub": True}
+
+        def stub_from_pretrained(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return StubBackend()
+
+        monkeypatch.setattr(hf_backend.HFBackend, "from_pretrained", stub_from_pretrained)
+
+        built = hf_backend.build_hf_model(spec, dtype=torch.float32, device="cpu")
+
+        assert captured == {
+            "model_id": "org/model",
+            "dtype": torch.float32,
+            "device": "cpu",
+            "revision": None,
+            "local_files_only": True,
+        }
+        assert built.is_hf_backend is True
+
+    def test_offline_round_trips_through_experiment_config(self):
+        from uniqkache.bench.config import ExperimentConfig
+
+        config = ExperimentConfig.from_dict(
+            {
+                "name": "offline-exp",
+                "runs": [
+                    {
+                        "model": "org/model",
+                        "offline": True,
+                        "policy": "full_cache",
+                    }
+                ],
+            }
+        )
+
+        restored = ExperimentConfig.from_dict(config.to_dict())
+        assert restored.runs[0].offline is True
+
+    def test_model_loaded_offline_recorded_for_hf_and_synthetic(self, monkeypatch):
+        from typing import ClassVar
+
+        from uniqkache.bench.runner import run_spec
+        from uniqkache.models import hf_backend
+
+        spec_hf_offline = RunSpec(
+            model="org/model",
+            offline=True,
+            policy="full_cache",
+            context_length=8,
+            max_new_tokens=2,
+            measure_quality=False,
+        )
+
+        class StubBackend:
+            identifier = "org/model"
+            revision = None
+            tokenizer = None
+            weights_are_random = False
+            vocab_size = 32
+            num_parameters = 7
+            config: ClassVar[dict[str, object]] = {"stub": True}
+            mirrored_bytes = 0
+
+            def forward(self, input_ids, cache=None, start_pos=0, **kwargs):
+                return torch.zeros(1, input_ids.shape[1], 32), None
+
+            def cache_config(
+                self,
+                capacity=None,
+                attention_sinks=0,
+                dtype=None,
+                device=None,
+                batch_size=1,
+            ):
+                return CacheConfig(
+                    num_layers=1, num_kv_heads=1, head_dim=8, dtype=torch.float32, capacity=capacity
+                )
+
+        monkeypatch.setattr(
+            hf_backend.HFBackend,
+            "from_pretrained",
+            lambda model_id, **kwargs: StubBackend(),
+        )
+
+        outcome_hf = run_spec(spec_hf_offline)
+        assert outcome_hf.record.model_loaded_offline is True
+
+        spec_hf_online = spec_hf_offline.with_overrides(offline=False)
+        outcome_online = run_spec(spec_hf_online)
+        assert outcome_online.record.model_loaded_offline is False
+
+        spec_synthetic = RunSpec(
+            model="synthetic:tiny",
+            context_length=8,
+            max_new_tokens=2,
+            measure_quality=False,
+            policy="full_cache",
+        )
+        outcome_synthetic = run_spec(spec_synthetic)
+        assert outcome_synthetic.record.model_loaded_offline is None
+
+
+# ---------------------------------------------------------------------------
 # Bug N — `--compressor int8` was a silent no-op: the runner set the compressor
 # on the cache but never called compress(), so the record claimed a mechanism
 # that never ran, with cache_compression_ratio stuck at 1.0 and zero integrity

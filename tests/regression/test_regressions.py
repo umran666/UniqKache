@@ -27,6 +27,7 @@ from uniqkache.cache.store import _gather_quantized
 from uniqkache.cache.types import CacheConfig
 from uniqkache.compression.quantize import Int8KVCompressor, quantize
 from uniqkache.metrics.quality import perplexity, random_token_ids
+from uniqkache.metrics.record import validate_record
 from uniqkache.metrics.report import load_records, records_to_markdown
 from uniqkache.models.synthetic import build_cache_for_model, build_model, get_preset
 from uniqkache.policies import FullCachePolicy, SlidingWindowPolicy
@@ -655,6 +656,56 @@ class TestHFRevisionPropagationRegression:
         )
         assert record.model == "org/model"
         assert record.model_revision == "commit-sha-456"
+
+
+# ---------------------------------------------------------------------------
+# Bug N — `--compressor int8` was a silent no-op: the runner set the compressor
+# on the cache but never called compress(), so the record claimed a mechanism
+# that never ran, with cache_compression_ratio stuck at 1.0 and zero integrity
+# problems. This is exactly the "record claims a mechanism that never ran"
+# failure mode the project's reporting rules forbid.
+# ---------------------------------------------------------------------------
+
+
+class TestCompressorIsNotASilentNoOp:
+    """Pins: a `--compressor int8` run must be visible in its own record."""
+
+    def _run(self, tmp_path, compressor: str | None):
+        from uniqkache.bench.cli import main
+
+        args = [
+            "--model",
+            "synthetic:tiny",
+            "--context-length",
+            "64",
+            "--max-new-tokens",
+            "2",
+            "--no-quality",
+            "--output-dir",
+            str(tmp_path),
+            "--quiet",
+        ]
+        if compressor is not None:
+            args += ["--compressor", compressor]
+        assert main(args) == 0
+        (record,) = load_records(tmp_path)
+        return record
+
+    def test_the_compressed_run_differs_from_the_plain_run(self, tmp_path):
+        plain = self._run(tmp_path / "plain", None)
+        compressed = self._run(tmp_path / "compressed", "int8")
+
+        # Before the fix both records were byte-identical in these fields, and
+        # the compressed one claimed compressor="int8" with ratio 1.0.
+        assert compressed.compressor == "int8"
+        assert compressed.cache_compression_ratio > 1.0
+        assert compressed.cache_bytes_total < plain.cache_bytes_total
+        assert compressed.cache_final_tokens == plain.cache_final_tokens
+
+    def test_validate_record_catches_the_original_failure_mode(self):
+        """The exact record the bug produced must be flagged, forever."""
+        problems = validate_record(good_record(compressor="int8", cache_compression_ratio=1.0))
+        assert any("compression that is not visible" in p for p in problems)
 
 
 # ---------------------------------------------------------------------------

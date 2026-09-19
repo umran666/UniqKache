@@ -283,6 +283,20 @@ def validate_record(record: BenchmarkRecord) -> list[str]:
             "decode step count is needed to interpret a per-token latency"
         )
 
+    # A record that names a compressor must show that it ran. `1.0` means "no
+    # saving", `None` means "not measured"; both mean the claimed mechanism is
+    # invisible in the record, which is exactly the silent no-op that made this
+    # check necessary (a `--compressor int8` run once wrote `ratio=1.0` while
+    # claiming the compressor).
+    if record.compressor is not None and (
+        record.cache_compression_ratio is None or record.cache_compression_ratio <= 1.0
+    ):
+        problems.append(
+            f"compressor {record.compressor!r} is recorded but cache_compression_ratio "
+            f"is {record.cache_compression_ratio}; the record claims a compression that "
+            "is not visible in its own numbers"
+        )
+
     if record.weights_are_random and record.quality_claimed:
         problems.append(
             "quality was measured on a randomly-initialised model. That is a valid "

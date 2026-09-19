@@ -91,7 +91,7 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--device` | `auto` | `auto`, `cpu` or `cuda`. |
 | `--seed` | `0` | Random seed. |
 | `--max-new-tokens` | `8` | Decode steps. Sets the `full_cache` reference occupancy to `context + generated - 1`, so it changes the `vs full` column in a sweep; see F14. |
-| `--compressor` | off | `int8` compresses the cache before generation. |
+| `--compressor` | off | `int8` compresses the generation cache **after** generation, before the memory fields are recorded. See the note below. |
 | `--no-quality` | off | Skip quality. Strongly discouraged; the record will be flagged. |
 | `--quality-chunk-size` | `1` | Tokens per forward pass during quality evaluation. `1` reproduces true streaming decode. |
 | `--output-dir` | `experiments/results` | Where results go. |
@@ -100,6 +100,16 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--repo-path` | — | Repository root for git metadata. |
 
 Exit codes: `0` success, `2` configuration error, `3` a run failed.
+
+**When compression is applied.** `--compressor int8` compresses the generation cache *after*
+the decode phase and *before* the cache memory fields are read, so `cache_bytes_total` and
+`cache_compression_ratio` describe the compressed end-of-run state. Two consequences:
+
+- TTFT/TPOT/throughput are measured on the **uncompressed** cache; a compressed run's latency
+  columns are not a claim about compressed inference speed.
+- The quality pass runs through its own uncompressed cache, so `quality_value` stays comparable
+  to a no-compressor run at the same seed. Measuring the quality *cost* of int8 compression is
+  a separate experiment that is not wired into the CLI yet.
 
 Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_importance`,
 `adaptive`. Aliases: `streamingllm`/`streaming_llm` → `sliding_window`, `h2o`/`heavy_hitter` →

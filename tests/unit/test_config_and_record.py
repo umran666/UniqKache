@@ -205,6 +205,18 @@ class TestRecordValidation:
         )
         assert any("no capacity recorded" in p for p in problems)
 
+    def test_compressor_without_a_visible_ratio_is_flagged(self):
+        """A record naming a compressor must show the compression happened."""
+        for ratio in (None, 1.0):
+            problems = validate_record(
+                good_record(compressor="int8", cache_compression_ratio=ratio)
+            )
+            assert any("compression that is not visible" in p for p in problems)
+
+    def test_compressor_with_a_real_ratio_passes(self):
+        problems = validate_record(good_record(compressor="int8", cache_compression_ratio=1.9))
+        assert not any("compression" in p for p in problems)
+
     def test_empty_model_is_flagged(self):
         assert any("model is empty" in p for p in validate_record(good_record(model="")))
 

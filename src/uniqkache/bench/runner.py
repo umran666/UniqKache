@@ -340,6 +340,22 @@ def run_spec(
     generation = engine.generate(prompt)
     latencies = LatencyStats.from_samples(generation.per_step_ms)
 
+    if spec.compressor is not None:
+        # Compression is applied here, after the generation phase, and is
+        # applied to the *generation* cache only: the quality pass runs through
+        # its own uncompressed cache, so `quality_value` stays comparable to
+        # the no-compressor run and the record does not mix two cache states.
+        # The recorded bytes/ratio are therefore the end-of-run compressed
+        # state, while TTFT/TPOT were measured uncompressed. Both facts are
+        # stated in docs/benchmarks.md so the record cannot be misread.
+        compressed_layers = gen_cache.compress()
+        if compressed_layers == 0:
+            raise BackendError(
+                f"--compressor {spec.compressor} compressed nothing; the record would "
+                "claim a mechanism that never ran"
+            )
+        generation.cache_stats = gen_cache.stats().to_dict()
+
     # ---- quality ---------------------------------------------------------
     quality: QualityResult | None = None
     reference: float | None = None

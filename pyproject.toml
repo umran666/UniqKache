@@ -35,7 +35,9 @@ dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
 hf = ["transformers>=4.40"]
-quality = ["datasets>=2.18"]
+# There is deliberately no "quality" extra: it installed `datasets`, which no
+# code imported. Re-add it together with the dataset loader that uses it (see
+# the closed packaging issue in the tracker) rather than ahead of it.
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",

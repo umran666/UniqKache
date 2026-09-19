@@ -20,10 +20,12 @@ Methodology and the record schema: [`docs/benchmarks.md`](../docs/benchmarks.md)
 | Reported findings | `docs/research.md` |
 | Record schema | `docs/benchmarks.md#record-schema` |
 
-A benchmark is a **config plus a description**. There is deliberately no separate
-`benchmarks/latency/run.py`-style tree of one-off scripts: a benchmark that exists only as a
-script cannot be reviewed, diffed, or re-run from its own description. If you want a new
-benchmark, add a config and an entry below.
+A benchmark is a **config plus a description**. This directory contains only this README, on
+purpose: there is deliberately no `benchmarks/latency/run.py`-style tree of one-off scripts
+(an earlier draft of this document described subdirectories that were never populated and were
+never tracked by git). A benchmark that exists only as a script cannot be reviewed, diffed, or
+re-run from its own description. If you want a new benchmark, add a config and an entry below.
+The same applies to `baselines/`, which likewise contains only its README.
 
 ---
 

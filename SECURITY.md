@@ -23,8 +23,9 @@ We do care about the following, because they are bugs in *our* code:
 - **Silent correctness failures** — a policy that reports a memory saving while
   returning incorrect attention results without raising or logging.
 - **Arbitrary code execution via deserialisation** — loading a malicious
-  experiment config or checkpoint. Configs are parsed as JSON/YAML data and are
-  never `eval`'d; report any path that violates this.
+  experiment config or checkpoint. Configs are parsed as JSON data only (there
+  is no YAML path anywhere in the tree) and are never `eval`'d; report any path
+  that violates this.
 - **Path traversal** in benchmark/experiment result writers.
 - **Credential leakage** — e.g. a HF token being written into a committed
   result record or log file.

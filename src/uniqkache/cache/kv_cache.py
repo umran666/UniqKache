@@ -41,7 +41,8 @@ Example
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -550,6 +551,153 @@ class KVCache:
             "prefetches": self._prefetches,
             "final_tokens": stats.total_tokens,
         }
+
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
+    def save(self, path: str | Path, *, model: str | None = None) -> Path:
+        """Save this cache's contents and activity state to disk via torch.save.
+
+        Preserves quantised layers without dequantising.
+
+        Parameters
+        ----------
+        path:
+            Target file path.
+        model:
+            Optional model identifier recorded for provenance.
+
+        Returns
+        -------
+        Path
+            The written file path.
+        """
+        extra_state = {
+            "step": self._step,
+            "evictions": self._evictions,
+            "evicted_tokens": self._evicted_tokens,
+            "compressions": self._compressions,
+            "offloads": self._offloads,
+            "prefetches": self._prefetches,
+        }
+        return self._store.save(path, model=model, extra_state=extra_state)
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        policy: BaseCachePolicy | None = None,
+        *,
+        config: CacheConfig | None = None,
+        compressor: BaseCompressor | None = None,
+        auto_enforce: bool = True,
+        map_location: Any = None,
+    ) -> KVCache:
+        """Load a KVCache from a checkpoint file.
+
+        Parameters
+        ----------
+        path:
+            Path to the checkpoint file.
+        policy:
+            Retention policy. When ``config.capacity`` is not None, a policy is required.
+        config:
+            Optional CacheConfig to validate against. When omitted, the configuration
+            is restored from the checkpoint.
+        compressor:
+            Compressor to attach to the cache. Defaults to Int8KVCompressor.
+        auto_enforce:
+            Whether to auto-enforce capacity on appends.
+        map_location:
+            Optional device mapping for torch.load.
+
+        Returns
+        -------
+        KVCache
+            A restored cache with identical storage and counters.
+        """
+        target = Path(path)
+        if not target.is_file():
+            raise CacheStateError(f"checkpoint file not found: {target}")
+
+        raw = torch.load(target, map_location=map_location, weights_only=True)
+        if not isinstance(raw, dict):
+            raise CacheStateError(f"invalid checkpoint format in {target}")
+
+        saved_config_dict = raw.get("config")
+        if not saved_config_dict:
+            raise CacheStateError("checkpoint missing 'config'")
+
+        resolved_config = CacheConfig.from_dict(saved_config_dict)
+        if config is not None:
+            # Validate provided config against checkpoint config
+            if config.num_layers != resolved_config.num_layers:
+                raise CacheStateError(
+                    f"provided config num_layers ({config.num_layers}) != checkpoint ({resolved_config.num_layers})"
+                )
+            if config.num_kv_heads != resolved_config.num_kv_heads:
+                raise CacheStateError(
+                    f"provided config num_kv_heads ({config.num_kv_heads}) != checkpoint ({resolved_config.num_kv_heads})"
+                )
+            if config.head_dim != resolved_config.head_dim:
+                raise CacheStateError(
+                    f"provided config head_dim ({config.head_dim}) != checkpoint ({resolved_config.head_dim})"
+                )
+            if config.batch_size != resolved_config.batch_size:
+                raise CacheStateError(
+                    f"provided config batch_size ({config.batch_size}) != checkpoint ({resolved_config.batch_size})"
+                )
+            if config.dtype != resolved_config.dtype:
+                raise CacheStateError(
+                    f"provided config dtype ({config.dtype}) != checkpoint ({resolved_config.dtype})"
+                )
+            resolved_config = config
+
+        store = KVStore.load(target, resolved_config, map_location=map_location)
+        cache = cls(
+            resolved_config, policy=policy, compressor=compressor, auto_enforce=auto_enforce
+        )
+        cache._store = store
+
+        extra = raw.get("extra_state", {})
+        cache._step = extra.get("step", 0)
+        cache._evictions = extra.get("evictions", 0)
+        cache._evicted_tokens = extra.get("evicted_tokens", 0)
+        cache._compressions = extra.get("compressions", 0)
+        cache._offloads = extra.get("offloads", 0)
+        cache._prefetches = extra.get("prefetches", 0)
+
+        return cache
+
+    def load_checkpoint(self, path: str | Path, *, map_location: Any = None) -> None:
+        """In-place restore of cache storage and activity counters from a checkpoint.
+
+        Parameters
+        ----------
+        path:
+            Path to the checkpoint file.
+        map_location:
+            Optional device mapping for torch.load.
+        """
+        target = Path(path)
+        if not target.is_file():
+            raise CacheStateError(f"checkpoint file not found: {target}")
+
+        raw = torch.load(target, map_location=map_location, weights_only=True)
+        if not isinstance(raw, dict):
+            raise CacheStateError(f"invalid checkpoint format in {target}")
+
+        store = KVStore.load(target, self.config, map_location=map_location)
+        self._store = store
+
+        extra = raw.get("extra_state", {})
+        self._step = extra.get("step", 0)
+        self._evictions = extra.get("evictions", 0)
+        self._evicted_tokens = extra.get("evicted_tokens", 0)
+        self._compressions = extra.get("compressions", 0)
+        self._offloads = extra.get("offloads", 0)
+        self._prefetches = extra.get("prefetches", 0)
 
     def __len__(self) -> int:
         return self.num_tokens()

@@ -19,9 +19,13 @@ from __future__ import annotations
 import json
 
 import pytest
+import torch
 
 from uniqkache.bench.cli import main
+from uniqkache.bench.config import load_config
+from uniqkache.bench.runner import run_config
 from uniqkache.metrics.report import load_records
+from uniqkache.utils.errors import BackendError, ConfigError
 
 # Small but comfortably above the largest swept capacity, so every sweep row
 # actually exercises its budget rather than degenerating into a full cache.
@@ -75,6 +79,71 @@ class TestCompressorFlag:
         assert excinfo.value.code == 2
 
 
+class TestMemoryBudgetFlag:
+    """`--memory-budget-mb` converts a byte budget to capacity, and records both."""
+
+    def test_budget_resolves_to_a_capacity_within_budget(self, tmp_path):
+        assert (
+            _run_cli(
+                tmp_path,
+                "--model",
+                "synthetic:tiny",
+                "--policy",
+                "sliding_window",
+                "--context-length",
+                str(CTX),
+                "--max-new-tokens",
+                str(NEW_TOKENS),
+                "--no-quality",
+                "--memory-budget-mb",
+                "0.05",
+            )
+            == 0
+        )
+        record = _load_single_record(tmp_path)
+        assert record.memory_budget_mb == 0.05
+        assert record.capacity is not None and record.capacity >= 1
+        stats = record.policy_config["cache_config"]
+        element = torch.tensor([], dtype=getattr(torch, stats["dtype"].split(".")[-1]))
+        per_token = 2 * stats["num_layers"] * stats["num_kv_heads"] * stats["head_dim"]
+        per_token *= element.element_size()
+        expected_max_bytes = 0.05 * 1024 * 1024
+        assert record.capacity * per_token <= expected_max_bytes
+        assert (record.capacity + 1) * per_token > expected_max_bytes  # floored, not rounded
+
+    def test_budget_with_full_cache_is_rejected(self, tmp_path):
+        config_path = tmp_path / "exp.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "name": "x",
+                    "runs": [
+                        {
+                            "model": "synthetic:tiny",
+                            "policy": "full_cache",
+                            "context_length": 32,
+                            "memory_budget_mb": 1.0,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(BackendError) as excinfo:
+            run_config(load_config(str(config_path)), output_dir=tmp_path)
+        assert "never evicts" in str(excinfo.value)
+
+    def test_budget_is_mutually_exclusive_with_capacity_and_ratio(self, tmp_path, capsys):
+        # Two budget knobs is a configuration error: RunSpec raises ConfigError,
+        # which main() maps to exit code 2 (not an argparse SystemExit).
+        for extra in ("--keep-ratio", "0.5"), ("--capacity", "32"):
+            assert _run_cli(tmp_path, *extra, "--memory-budget-mb", "1.0") == 2
+            assert "configuration error" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as excinfo:
+            _run_cli(tmp_path, "--sweep", "--memory-budget-mb", "1.0")
+        assert excinfo.value.code == 2
+
+
 class TestNoQualityFlag:
     def test_no_quality_produces_a_record_that_validate_record_flags(self, tmp_path):
         assert (
@@ -93,6 +162,110 @@ class TestNoQualityFlag:
         record = _load_single_record(tmp_path)
         assert record.quality_metric is None
         assert record.quality_value is None
+
+
+class TestNeedleQualityMetric:
+    """`--quality-metric needle_retrieval` is wired, recorded, and discriminating."""
+
+    def test_needle_run_records_the_metric_and_reference(self, tmp_path):
+        assert (
+            _run_cli(
+                tmp_path,
+                "--model",
+                "synthetic:tiny",
+                "--policy",
+                "full_cache",
+                "--context-length",
+                "128",
+                "--max-new-tokens",
+                "2",
+                "--quality-metric",
+                "needle_retrieval",
+                "--needle-length",
+                "8",
+            )
+            == 0
+        )
+        record = _load_single_record(tmp_path)
+        assert record.quality_metric == "needle_retrieval"
+        assert record.quality_reference == record.quality_value
+        assert record.quality_delta == 0.0
+
+    def test_evicting_policy_does_not_score_above_full_cache_on_the_needle(self, tmp_path):
+        """The task must be wired and recorded for both policies.
+
+        On the random-weight model, retrieval is chance-level (0.0) for *both*
+        policies — that is exactly what ``is_interpretable=False`` flags, and it
+        is why the runner records the caveat. What this test pins is the
+        wiring: the metric name, the full-cache reference row, and the delta's
+        sign convention. Discrimination between policies is pinned in
+        ``tests/regression`` on the perplexity metric, where a random model
+        *does* discriminate information loss.
+        """
+        full_dir = tmp_path / "full"
+        evict_dir = tmp_path / "evict"
+        args = [
+            "--model",
+            "synthetic:tiny",
+            "--context-length",
+            "128",
+            "--max-new-tokens",
+            "2",
+            "--quality-metric",
+            "needle_retrieval",
+            "--needle-length",
+            "8",
+            "--needle-depth",
+            "0.5",
+        ]
+        assert _run_cli(full_dir, *args, "--policy", "full_cache") == 0
+        assert (
+            _run_cli(
+                evict_dir,
+                *args,
+                "--policy",
+                "sliding_window",
+                "--keep-ratio",
+                "0.25",
+                "--attention-sinks",
+                "4",
+            )
+            == 0
+        )
+        full = _load_single_record(full_dir)
+        evicted = _load_single_record(evict_dir)
+        assert full.quality_metric == "needle_retrieval"
+        assert evicted.quality_metric == "needle_retrieval"
+        # Reference rows always carry the full-cache score, so quality_delta
+        # stays comparable across metrics without a sign flip.
+        assert evicted.quality_reference == full.quality_value
+        assert evicted.quality_delta <= 0.0
+        # Chance-level on the random model: both score 0.0, and both records
+        # flag the number as a diagnostic, not a result.
+        assert full.quality_value == evicted.quality_value
+
+    def test_unknown_metric_is_rejected(self, tmp_path):
+        config_path = tmp_path / "exp.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "name": "x",
+                    "runs": [
+                        {
+                            "model": "synthetic:tiny",
+                            "context_length": 32,
+                            "quality_metric": "bleu",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ConfigError):
+            load_config(str(config_path))
+        with pytest.raises(SystemExit) as excinfo:
+            _run_cli(tmp_path, "--quality-metric", "bleu")
+        assert excinfo.value.code == 2
 
 
 class TestSweepFlag:

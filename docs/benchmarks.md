@@ -94,6 +94,11 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--compressor` | off | `int8` compresses the generation cache **after** generation, before the memory fields are recorded. See the note below. |
 | `--no-quality` | off | Skip quality. Strongly discouraged; the record will be flagged. |
 | `--quality-chunk-size` | `1` | Tokens per forward pass during quality evaluation. `1` reproduces true streaming decode. |
+| `--quality-metric` | `perplexity` | `perplexity` or `needle_retrieval`. The needle task inserts `--needle-length` tokens at `--needle-depth` of the haystack and asks the model to reproduce them; a policy that evicts the needle cannot score well. |
+| `--needle-length` | `16` | Needle tokens for `needle_retrieval`. |
+| `--needle-depth` | `0.5` | Needle position as a fraction of the haystack, in `[0, 1]`. |
+| `--offline` | off | HF models only: resolve the model strictly from the local cache, never the network. The record states which mode was used (`model_loaded_offline`). |
+| `--memory-budget-mb` | — | KV budget in MiB, converted to a token capacity via `tokens_for_bytes` (floored, so the budget is never exceeded). Mutually exclusive with `--capacity` and `--keep-ratio`; both the requested budget and the derived capacity are recorded. |
 | `--output-dir` | `experiments/results` | Where results go. |
 | `--config` | — | Run an experiment config instead of a single ad-hoc run. |
 | `--sweep` | off | Expand into the 100/75/50/25/10 % retention sweep. |
@@ -110,6 +115,18 @@ the decode phase and *before* the cache memory fields are read, so `cache_bytes_
 - The quality pass runs through its own uncompressed cache, so `quality_value` stays comparable
   to a no-compressor run at the same seed. Measuring the quality *cost* of int8 compression is
   a separate experiment that is not wired into the CLI yet.
+
+**Quality metric and its reference.** `quality_reference` is the full-cache value **in the same
+metric as the run** — full-cache perplexity for perplexity runs, full-cache needle score for
+needle runs. `quality_delta` is sign-normalised within the metric (positive always means
+better; for the needle task, higher raw score is already better, so no inversion happens).
+`quality_metric` on the record says which one a reader is looking at; never compare a needle
+delta against a perplexity delta.
+
+**HF runs and network access.** By default a Hugging Face model is resolved with network access
+permitted. `--offline` restricts resolution to the local cache, and the record's
+`model_loaded_offline` field states which mode the run used — a record that needed a download
+is not re-creatable on an air-gapped machine, and the field makes that visible.
 
 Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_importance`,
 `adaptive`. Aliases: `streamingllm`/`streaming_llm` → `sliding_window`, `h2o`/`heavy_hitter` →
@@ -128,6 +145,7 @@ Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_impor
 | `cache_bytes_offloaded` | The part moved to another tier. |
 | `cache_compression_ratio` | Representation change. `1.0` means uncompressed. |
 | `cache_final_tokens` | Tokens held, **summed across layers**. Divide by the layer count for a per-layer figure. |
+| `mirror_overhead_bytes` | Extra K/V bytes the run holds on top of the model-native cache. On an HF run this is the adapter's mirror duplication: the model's own `DynamicCache` plus the UniqKache mirror each hold one full copy, so **subtract this from `cache_bytes_total` for the model-native footprint**, the denominator any memory-reduction claim must use. `null` on the synthetic backend, where there is no mirror. |
 | `peak_memory_bytes` | Peak device memory during the run. `null` on CPU — never `0`. |
 
 **`cache_bytes_on_device` and `cache_bytes_offloaded` are separate on purpose.** Reporting a

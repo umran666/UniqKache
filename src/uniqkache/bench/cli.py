@@ -108,6 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
         "Mutually exclusive with --capacity.",
     )
     parser.add_argument(
+        "--memory-budget-mb",
+        type=float,
+        default=None,
+        help="KV-cache budget in MiB, converted to a token capacity via "
+        "tokens_for_bytes (floored, so the budget is never exceeded). Mutually "
+        "exclusive with --capacity and --keep-ratio. The requested budget and the "
+        "derived capacity are both recorded.",
+    )
+    parser.add_argument(
         "--attention-sinks",
         type=int,
         default=4,
@@ -132,6 +141,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--task", default="generation", help="Task label for the record")
     parser.add_argument("--dataset", default=None, help="Dataset identifier for the record")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Hugging Face models: resolve only from the local cache, never the "
+        "network. Off by default; the record states which mode was used so a run "
+        "that downloaded weights is distinguishable from one that did not.",
+    )
+    parser.add_argument(
+        "--quality-metric",
+        default="perplexity",
+        choices=["perplexity", "needle_retrieval"],
+        help="Quality task for the run. 'needle_retrieval' asks the model to "
+        "reproduce an inserted token sequence; an evicting policy that drops the "
+        "needle fails it, which perplexity alone may not show.",
+    )
+    parser.add_argument(
+        "--needle-length",
+        type=int,
+        default=16,
+        help="Needle tokens for --quality-metric needle_retrieval.",
+    )
+    parser.add_argument(
+        "--needle-depth",
+        type=float,
+        default=0.5,
+        help="Needle position as a fraction of the haystack length, in [0, 1].",
+    )
     parser.add_argument(
         "--compressor",
         default=None,
@@ -196,11 +232,16 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
     return RunSpec(
         model=args.model,
         model_revision=args.model_revision,
+        offline=args.offline,
+        quality_metric=args.quality_metric,
+        needle_length=args.needle_length,
+        needle_depth=args.needle_depth,
         policy=args.policy,
         context_length=args.context_length,
         batch_size=args.batch_size,
         capacity=args.capacity,
         keep_ratio=args.keep_ratio,
+        memory_budget_mb=args.memory_budget_mb,
         attention_sinks=args.attention_sinks,
         precision=args.precision,
         device=args.device,
@@ -246,10 +287,14 @@ def main(argv: list[str] | None = None) -> int:
             # RunSpec: a sweep's whole point is that each run has a different
             # budget, so validating one budget-less spec first would reject a
             # perfectly valid sweep.
-            if args.capacity is not None or args.keep_ratio is not None:
+            if (
+                args.capacity is not None
+                or args.keep_ratio is not None
+                or args.memory_budget_mb is not None
+            ):
                 parser.error(
                     "--sweep derives its own budget per ratio; do not pass "
-                    "--capacity or --keep-ratio alongside it"
+                    "--capacity, --keep-ratio or --memory-budget-mb alongside it"
                 )
             config = percent_sweep(
                 model=args.model,
@@ -264,8 +309,12 @@ def main(argv: list[str] | None = None) -> int:
                 task=args.task,
                 dataset=args.dataset,
                 measure_quality=not args.no_quality,
+                quality_metric=args.quality_metric,
+                needle_length=args.needle_length,
+                needle_depth=args.needle_depth,
                 quality_chunk_size=args.quality_chunk_size,
                 model_revision=args.model_revision,
+                offline=args.offline,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

@@ -1,0 +1,33 @@
+{
+  "name": "needle-comparison",
+  "description": "full_cache reference plus sliding_window at a 25% budget on the needle_retrieval task. On this comparison the evicting policy must score strictly below full_cache: a policy that drops the needle cannot reproduce it, and this task catches what perplexity alone may miss.",
+  "runs": [
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 128,
+      "attention_sinks": 0,
+      "quality_metric": "needle_retrieval",
+      "needle_length": 8,
+      "needle_depth": 0.5,
+      "seed": 0,
+      "max_new_tokens": 2,
+      "device": "cpu",
+      "notes": "reference: the needle is always resident"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "sliding_window",
+      "context_length": 128,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "quality_metric": "needle_retrieval",
+      "needle_length": 8,
+      "needle_depth": 0.5,
+      "seed": 0,
+      "max_new_tokens": 2,
+      "device": "cpu",
+      "notes": "evicting run: budget 32 of 128 tokens, needle at 50% depth"
+    }
+  ]
+}

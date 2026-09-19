@@ -104,6 +104,10 @@ class BenchmarkRecord:
     model_config: dict[str, Any] = field(default_factory=dict)
     weights_are_random: bool = False
     tokenizer: str | None = None
+    # Whether the model was resolved strictly from the local cache, with no
+    # network access. False means a download was permitted (and the record does
+    # not say whether one actually happened — only that it was allowed).
+    model_loaded_offline: bool | None = None
 
     # -- workload ---------------------------------------------------------
     task: str = "generation"
@@ -119,6 +123,10 @@ class BenchmarkRecord:
     capacity: int | None = None
     attention_sinks: int = 0
     compressor: str | None = None
+    # The budget the user asked for, in MiB, when the capacity was derived from
+    # bytes rather than stated in tokens. `capacity` alone cannot distinguish
+    # "asked for 4096 tokens" from "asked for 512 MiB and got 4096 tokens".
+    memory_budget_mb: float | None = None
 
     # -- hardware ---------------------------------------------------------
     device: str = "cpu"
@@ -133,6 +141,10 @@ class BenchmarkRecord:
     cache_bytes_offloaded: int | None = None
     cache_compression_ratio: float | None = None
     cache_final_tokens: int | None = None
+    # Extra K/V bytes held on top of the model-native cache (currently: the HF
+    # adapter's mirror duplication). Subtract from `cache_bytes_total` for the
+    # model-native footprint. None when there is no known holder overhead.
+    mirror_overhead_bytes: int | None = None
 
     # -- latency ----------------------------------------------------------
     ttft_ms: float | None = None

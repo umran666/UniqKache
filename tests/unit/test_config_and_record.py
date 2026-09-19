@@ -52,8 +52,22 @@ class TestRunSpec:
             RunSpec(policy="sliding_window", context_length=1024)
 
     def test_capacity_and_keep_ratio_together_are_rejected(self):
-        with pytest.raises(ConfigError, match="not both"):
+        with pytest.raises(ConfigError, match="exactly one token-budget field"):
             RunSpec(context_length=1024, capacity=10, keep_ratio=0.5)
+
+    def test_memory_budget_with_capacity_or_ratio_is_rejected(self):
+        with pytest.raises(ConfigError, match="exactly one token-budget field"):
+            RunSpec(context_length=1024, memory_budget_mb=64.0, capacity=10)
+        with pytest.raises(ConfigError, match="exactly one token-budget field"):
+            RunSpec(context_length=1024, memory_budget_mb=64.0, keep_ratio=0.5)
+
+    def test_memory_budget_alone_is_accepted(self):
+        spec = RunSpec(policy="sliding_window", context_length=1024, memory_budget_mb=64.0)
+        assert spec.memory_budget_mb == 64.0
+
+    def test_non_positive_memory_budget_is_rejected(self):
+        with pytest.raises(ConfigError, match="memory_budget_mb must be > 0"):
+            RunSpec(context_length=1024, memory_budget_mb=0.0)
 
     def test_full_cache_without_a_budget_is_allowed(self):
         assert RunSpec(policy="full_cache", context_length=1024).resolved_capacity is None

@@ -64,11 +64,16 @@ class RunSpec:
 
     model: str = "synthetic:tiny"
     model_revision: str | None = None
+    offline: bool = False
+    quality_metric: str = "perplexity"
+    needle_length: int = 16
+    needle_depth: float = 0.5
     policy: str = "full_cache"
     context_length: int = 1024
     batch_size: int = 1
     capacity: int | None = None
     keep_ratio: float | None = None
+    memory_budget_mb: float | None = None
     attention_sinks: int = 0
     precision: str = "float32"
     device: str = "auto"
@@ -85,20 +90,40 @@ class RunSpec:
     def __post_init__(self) -> None:
         if self.context_length < 2:
             raise ConfigError(f"context_length must be >= 2, got {self.context_length}")
-        if self.capacity is not None and self.keep_ratio is not None:
+        budget_fields = [
+            name
+            for name, value in (
+                ("capacity", self.capacity),
+                ("keep_ratio", self.keep_ratio),
+                ("memory_budget_mb", self.memory_budget_mb),
+            )
+            if value is not None
+        ]
+        if len(budget_fields) > 1:
             raise ConfigError(
-                "pass either capacity or keep_ratio, not both: they both set the "
-                "token budget and silently preferring one would make the config "
-                "ambiguous"
+                f"pass exactly one token-budget field, got {budget_fields}: they all "
+                "set the per-layer budget and silently preferring one would make the "
+                "config ambiguous"
             )
         if self.keep_ratio is not None and not 0.0 < self.keep_ratio <= 1.0:
             raise ConfigError(f"keep_ratio must be in (0, 1], got {self.keep_ratio}")
+        if self.memory_budget_mb is not None and self.memory_budget_mb <= 0:
+            raise ConfigError(f"memory_budget_mb must be > 0, got {self.memory_budget_mb}")
         if self.attention_sinks < 0:
             raise ConfigError(f"attention_sinks must be >= 0, got {self.attention_sinks}")
         if self.batch_size < 1:
             raise ConfigError(f"batch_size must be >= 1, got {self.batch_size}")
         if self.max_new_tokens < 0:
             raise ConfigError(f"max_new_tokens must be >= 0, got {self.max_new_tokens}")
+        if self.quality_metric not in {"perplexity", "needle_retrieval"}:
+            raise ConfigError(
+                f"quality_metric must be 'perplexity' or 'needle_retrieval', "
+                f"got {self.quality_metric!r}"
+            )
+        if self.needle_length < 1:
+            raise ConfigError(f"needle_length must be >= 1, got {self.needle_length}")
+        if not 0.0 <= self.needle_depth <= 1.0:
+            raise ConfigError(f"needle_depth must be in [0, 1], got {self.needle_depth}")
         if self.quality_chunk_size < 1:
             raise ConfigError(f"quality_chunk_size must be >= 1, got {self.quality_chunk_size}")
 
@@ -120,10 +145,14 @@ class RunSpec:
                 f"{self.resolved_capacity}; the protected tokens would leave no room "
                 "for any evictable token"
             )
-        if self.policy != "full_cache" and self.resolved_capacity is None:
+        if (
+            self.policy != "full_cache"
+            and self.resolved_capacity is None
+            and self.memory_budget_mb is None
+        ):
             raise ConfigError(
                 f"policy {self.policy!r} evicts, but no budget was given. Set "
-                "keep_ratio or capacity, or use policy 'full_cache'."
+                "keep_ratio, capacity or memory_budget_mb, or use policy 'full_cache'."
             )
 
     @property

@@ -316,6 +316,10 @@ def needle_retrieval(
         )
 
     filler = random_token_ids(vocab_size, haystack_length, seed=seed)
+    # The needle may live on another device (the runner pins it to the model's
+    # device); the haystack adopts the needle's device so the concatenation and
+    # the forward pass see one device.
+    filler = filler.to(needle.device)
     insert_at = int(depth * (haystack_length - needle_len))
     insert_at = max(0, min(insert_at, haystack_length - needle_len))
     context = torch.cat(

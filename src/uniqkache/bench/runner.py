@@ -31,7 +31,12 @@ from uniqkache.bench.config import ExperimentConfig, RunSpec
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
 from uniqkache.metrics.latency import LatencyStats
-from uniqkache.metrics.quality import QualityResult, perplexity, random_token_ids
+from uniqkache.metrics.quality import (
+    QualityResult,
+    needle_retrieval,
+    perplexity,
+    random_token_ids,
+)
 from uniqkache.metrics.record import BenchmarkRecord, git_commit, git_is_dirty, validate_record
 from uniqkache.models.synthetic import build_model, get_preset
 from uniqkache.policies import build_policy
@@ -92,6 +97,10 @@ class _BuiltModel:
     # True when the model came from uniqkache.models.hf_backend, whose K/V mirror
     # overstates the recorded cache memory and must be annotated on the record.
     is_hf_backend: bool = False
+    # Extra K/V bytes the run holder keeps on top of the model's own cache
+    # (the HF adapter's mirror duplication). A callable resolved after the run,
+    # so a live counter can be read at record time; None when not measurable.
+    mirror_overhead_bytes_fn: Any = None
 
 
 def _build_synthetic(spec: RunSpec, dtype: torch.dtype, device: str) -> _BuiltModel:
@@ -178,20 +187,44 @@ def _quality_reference(
     device: str,
     memo: dict[tuple[Any, ...], float],
 ) -> float | None:
-    """Full-cache perplexity for this (model, prompt, chunk size), memoised.
+    """Full-cache quality in the spec's metric for this run, memoised.
 
-    The reference is the no-information-loss value. Without it, a bounded run's
-    perplexity is a bare number with nothing to compare against, and the reader
-    cannot tell whether the policy cost anything.
+    The reference is the no-information-loss value *in the same metric as the
+    run*: a perplexity reference against a needle value would make
+    `quality_delta` meaningless. Without the reference, a bounded run's quality
+    is a bare number with nothing to compare against, and the reader cannot
+    tell whether the policy cost anything.
     """
-    key = (spec.model, spec.seed, int(prompt.shape[1]), spec.quality_chunk_size, str(dtype))
+    key = (
+        spec.model,
+        spec.seed,
+        int(prompt.shape[1]),
+        spec.quality_chunk_size,
+        str(dtype),
+        spec.quality_metric,
+        spec.needle_length,
+        spec.needle_depth,
+    )
     if key in memo:
         return memo[key]
 
     unbounded = _make_cache(spec, built, capacity=None, dtype=dtype, device=device)
-    result = perplexity(
-        built.model, prompt, cache=unbounded, chunk_size=spec.quality_chunk_size, device=device
-    )
+    if spec.quality_metric == "needle_retrieval":
+        needle = random_token_ids(built.vocab_size, spec.needle_length, seed=spec.seed + 1)
+        needle = needle.to(device)
+        result = needle_retrieval(
+            built.model,
+            haystack_length=max(spec.context_length, spec.needle_length + 2),
+            needle=needle,
+            vocab_size=built.vocab_size,
+            depth=spec.needle_depth,
+            seed=spec.seed,
+            cache=unbounded,
+        )
+    else:
+        result = perplexity(
+            built.model, prompt, cache=unbounded, chunk_size=spec.quality_chunk_size, device=device
+        )
     if result.value is not None:
         memo[key] = result.value
     return result.value
@@ -234,8 +267,13 @@ def _warmup(
 
     # Phase 2: the eviction path, if this run can evict. A deliberately tiny
     # warmup capacity guarantees eviction fires several times.
-    if spec.resolved_capacity is not None:
-        warm_capacity = max(2, min(spec.resolved_capacity, 8))
+    warm_budget: int | None = spec.resolved_capacity
+    if spec.memory_budget_mb is not None:
+        # A byte budget is not yet resolved to tokens at warmup time (that needs
+        # the built model in the caller's scope); warm with a fixed tiny budget.
+        warm_budget = 8
+    if warm_budget is not None:
+        warm_capacity = max(2, min(warm_budget, 8))
         warm_spec = RunSpec(
             model=spec.model,
             policy=spec.policy,
@@ -243,6 +281,7 @@ def _warmup(
             batch_size=spec.batch_size,
             capacity=warm_capacity,
             keep_ratio=None,
+            memory_budget_mb=None,  # capacity is already resolved for the warmup
             attention_sinks=min(spec.attention_sinks, warm_capacity - 1),
             precision=spec.precision,
             device=spec.device,
@@ -299,12 +338,42 @@ def run_spec(
         spec.model,
         spec.policy,
         spec.context_length,
-        spec.resolved_capacity,
+        spec.resolved_capacity if spec.memory_budget_mb is None else "<from budget>",
         spec.attention_sinks,
         device,
     )
 
     built = build_model_for_spec(spec, dtype, device)
+
+    # A byte budget is resolved here, in the runner, because the translation
+    # needs the built model's exact cache shape (layers, heads, head_dim,
+    # dtype, batch). `tokens_for_bytes` floors, so the derived capacity never
+    # exceeds the requested budget. The requested budget is recorded alongside
+    # the derived capacity: `capacity` alone cannot distinguish "I asked for
+    # 4096 tokens" from "I asked for 512 MiB and got 4096 tokens".
+    capacity = spec.resolved_capacity
+    if spec.memory_budget_mb is not None:
+        byte_budget = int(spec.memory_budget_mb * 1024 * 1024)
+        probe_config = built.cache_config_factory(None, spec.attention_sinks, dtype, device)
+        capacity = probe_config.tokens_for_bytes(byte_budget)
+        if capacity < 1:
+            raise ConfigError(
+                f"memory budget {spec.memory_budget_mb} MiB fits 0 tokens at this "
+                f"model's cache shape ({probe_config.bytes_per_token()} bytes/token "
+                "across all layers); the budget is too small to be meaningful"
+            )
+        if spec.attention_sinks > capacity:
+            raise ConfigError(
+                f"attention_sinks {spec.attention_sinks} exceeds the capacity {capacity} "
+                f"derived from the {spec.memory_budget_mb} MiB budget"
+            )
+        if spec.policy == "full_cache":
+            raise ConfigError(
+                "memory_budget_mb sets a token budget, but policy 'full_cache' never "
+                "evicts; the budget would be recorded but never enforced. Use an "
+                "evicting policy."
+            )
+
     if device == "cpu" and dtype in {torch.float16, torch.bfloat16}:
         # Half precision on CPU is slow and, for some ops, unsupported. The
         # result would be a latency number that says more about the CPU backend
@@ -322,9 +391,7 @@ def run_spec(
     _warmup(spec, built, dtype=dtype, device=device)
 
     # ---- generation ------------------------------------------------------
-    gen_cache = _make_cache(
-        spec, built, capacity=spec.resolved_capacity, dtype=dtype, device=device
-    )
+    gen_cache = _make_cache(spec, built, capacity=capacity, dtype=dtype, device=device)
     if spec.compressor is not None:
         from uniqkache.compression.quantize import Int8KVCompressor
 
@@ -348,7 +415,7 @@ def run_spec(
         # The recorded bytes/ratio are therefore the end-of-run compressed
         # state, while TTFT/TPOT were measured uncompressed. Both facts are
         # stated in docs/benchmarks.md so the record cannot be misread.
-        compressed_layers = gen_cache.compress()
+        compressed_layers = gen_cache.compress(method=spec.compressor)
         if compressed_layers == 0:
             raise BackendError(
                 f"--compressor {spec.compressor} compressed nothing; the record would "
@@ -360,16 +427,31 @@ def run_spec(
     quality: QualityResult | None = None
     reference: float | None = None
     if spec.measure_quality:
-        quality_cache = _make_cache(
-            spec, built, capacity=spec.resolved_capacity, dtype=dtype, device=device
-        )
-        quality = perplexity(
-            built.model,
-            prompt,
-            cache=quality_cache,
-            chunk_size=spec.quality_chunk_size,
-            device=device,
-        )
+        quality_cache = _make_cache(spec, built, capacity=capacity, dtype=dtype, device=device)
+        if spec.quality_metric == "needle_retrieval":
+            # The needle task builds its own haystack from the same length and
+            # seed knobs, so the run stays reproducible from its spec. The
+            # reference is evaluated in the same metric, not in perplexity:
+            # mixing the two would make quality_delta meaningless.
+            needle = random_token_ids(built.vocab_size, spec.needle_length, seed=spec.seed + 1)
+            needle = needle.to(device)
+            quality = needle_retrieval(
+                built.model,
+                haystack_length=max(spec.context_length, spec.needle_length + 2),
+                needle=needle,
+                vocab_size=built.vocab_size,
+                depth=spec.needle_depth,
+                seed=spec.seed,
+                cache=quality_cache,
+            )
+        else:
+            quality = perplexity(
+                built.model,
+                prompt,
+                cache=quality_cache,
+                chunk_size=spec.quality_chunk_size,
+                device=device,
+            )
         if spec.policy == "full_cache":
             reference = quality.value
         else:
@@ -391,6 +473,12 @@ def run_spec(
         model_config=built.config,
         weights_are_random=built.weights_are_random,
         tokenizer=built.tokenizer,
+        model_loaded_offline=spec.offline if built.is_hf_backend else None,
+        mirror_overhead_bytes=(
+            int(built.mirror_overhead_bytes_fn())
+            if built.mirror_overhead_bytes_fn is not None
+            else None
+        ),
         task=spec.task,
         dataset=spec.dataset,
         context_length=spec.context_length,
@@ -399,8 +487,9 @@ def run_spec(
         precision=spec.precision,
         policy=spec.policy,
         policy_config=_policy_config(gen_cache),
-        capacity=spec.resolved_capacity,
+        capacity=capacity,
         attention_sinks=spec.attention_sinks,
+        memory_budget_mb=spec.memory_budget_mb,
         compressor=spec.compressor,
         device=hardware.device_type,
         gpu_name=hardware.device_name if hardware.device_type == "cuda" else None,

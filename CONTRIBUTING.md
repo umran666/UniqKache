@@ -172,6 +172,20 @@ Requirements for a PR that touches runtime behaviour:
 Mark tests that need a GPU with `@pytest.mark.gpu` and slow ones with `@pytest.mark.slow`, so
 the default run stays fast and hardware-free.
 
+### Coverage floor
+
+CI runs a coverage gate (`--cov-fail-under=70`) over `tests/unit`, `tests/regression` and
+`tests/integration`. The floor is set to the measured coverage when the gate was introduced, so
+it can only move in one direction deliberately:
+
+- **Raising** the floor is always welcome; do it in the PR that adds the tests.
+- **Lowering** the floor requires a sentence in the PR description saying why the uncovered code
+  is acceptable. Merging a change that silently lets coverage regress is how a test suite stops
+  describing the code it claims to cover.
+
+Local check: `python -m pytest tests/unit tests/regression tests/integration -q --cov=uniqkache
+--cov-report=term-missing`.
+
 ---
 
 ## Benchmark requirements

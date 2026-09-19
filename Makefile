@@ -92,6 +92,10 @@ bench-correctness: ## Verify eviction policies preserve full-cache output where 
 results-table: ## Summarise collected results into a Markdown table
 	$(PYTHON) -m uniqkache.metrics.report --input $(OUTDIR) --format markdown
 
+.PHONY: verify-results
+verify-results: ## Re-run committed experiments and verify quality matches the artifacts
+	$(PYTHON) experiments/scripts/verify_results.py --results-dir $(OUTDIR)
+
 .PHONY: clean
 clean: ## Remove build artefacts and caches
 	rm -rf build dist .pytest_cache .ruff_cache .coverage htmlcov

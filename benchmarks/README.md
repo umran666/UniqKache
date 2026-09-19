@@ -74,8 +74,8 @@ serving configuration.
 | Benchmark | Metric | Status |
 | --- | --- | --- |
 | Language modelling | `perplexity` | Implemented, wired into the runner, measured through a cache |
-| Needle retrieval | `needle_retrieval` | Implemented in `metrics/quality.py`, **not yet wired into a config** |
-| Exact match | `exact_match` | Implemented, **not yet wired into a config** |
+| Needle retrieval | `needle_retrieval` | Implemented and wired in: `--quality-metric needle_retrieval` (see `experiments/configs/needle_comparison.json`) |
+| Exact match | `exact_match` | Implemented in `metrics/quality.py`, **not yet wired into a config** (the needle task uses exact match internally) |
 | Task accuracy | — | **Not yet supported** |
 | Summarisation / reasoning | — | **Not yet supported** |
 

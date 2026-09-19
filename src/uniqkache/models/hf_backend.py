@@ -103,6 +103,7 @@ class HFBackend:
         )
         self._hidden_size = int(getattr(config, "hidden_size", 0))
         self._num_heads = int(getattr(config, "num_attention_heads", 1))
+        self._mirrored_bytes: int = 0  # K/V mirrored into UniqKache so far
         if self._num_layers < 1 or self._num_kv_heads < 1:
             raise BackendError(
                 f"could not determine layer/head counts from {type(config).__name__}; "
@@ -263,8 +264,13 @@ class HFBackend:
         """Copy newly produced K/V into the UniqKache cache for bookkeeping.
 
         Only the rows for this call's positions are copied, so repeated calls do
-        not double-append. See the module docstring for the duplication caveat.
+        not double-append. Every mirrored byte is also recorded in
+        ``self._mirrored_bytes``: the mirror duplicates the model-native cache
+        one-for-one, so that counter is exactly the record's
+        ``mirror_overhead_bytes``. See the module docstring for the caveat.
         """
+        from uniqkache.utils.device import tensor_bytes
+
         for layer_idx in range(self._num_layers):
             layer = self._hf_cache.layers[layer_idx]
             keys, values = layer.keys, layer.values
@@ -272,10 +278,28 @@ class HFBackend:
                 continue
             new_keys = keys[:, :, start_pos : start_pos + seq, :]
             new_values = values[:, :, start_pos : start_pos + seq, :]
+            if new_keys.numel():
+                self._mirrored_bytes += tensor_bytes(new_keys) + tensor_bytes(new_values)
             cache.append(layer_idx, new_keys, new_values)
 
+    @property
+    def mirrored_bytes(self) -> int:
+        """K/V bytes mirrored into UniqKache caches so far.
+
+        The mirror duplicates the model-native cache one-for-one, so this is
+        exactly the run's ``mirror_overhead_bytes``. Zero when nothing has been
+        mirrored yet — which, given the mirror copies every forward pass's rows,
+        also means no forward pass with a cache ran.
+        """
+        return self._mirrored_bytes
+
     def reset(self) -> None:
-        """Drop the model's internal cache, starting a fresh sequence."""
+        """Drop the model's internal cache, starting a fresh sequence.
+
+        The mirror-byte counter is **not** reset: it is a lifetime total for
+        this backend instance, matching "how much extra was held over the whole
+        run" as reported on the record.
+        """
         self._hf_cache = None
 
 
@@ -292,7 +316,7 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
         dtype=dtype,
         device=device,
         revision=spec.model_revision,
-        local_files_only=False,
+        local_files_only=spec.offline,
     )
 
     def cache_config_factory(
@@ -317,6 +341,7 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
         config=backend.config,
         cache_config_factory=cache_config_factory,
         is_hf_backend=True,
+        mirror_overhead_bytes_fn=lambda: backend.mirrored_bytes,
     )
 
 

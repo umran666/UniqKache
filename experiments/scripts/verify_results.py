@@ -49,11 +49,25 @@ QUALITY_FIELDS = (
 CONFIGS = ("correctness.json", "needle_comparison.json")
 
 
-def _records_by_id(records_dir: Path) -> dict[str, dict]:
-    """Latest committed record per run identity (model+policy+context)."""
+def _records_by_config(results_dir: Path) -> dict[str, dict[str, dict]]:
+    """Committed records grouped by the config they were produced from, then by identity.
 
-    out: dict[str, dict] = {}
-    for path in sorted(records_dir.glob("*.jsonl")):
+    Each config keeps its own baselines so a later commit adding a new config
+    (say needle_comparison.json) does not overwrite the correctness baseline under
+    the same (model, policy, context) key.
+    """
+    out: dict[str, dict[str, dict]] = {}
+    for path in sorted(results_dir.glob("*.jsonl")):
+        base = path.stem
+        source_config_name: str | None = None
+        config_path = results_dir / f"{base}.config.json"
+        if config_path.exists():
+            try:
+                source_config_name = json.loads(config_path.read_text(encoding="utf-8")).get("name")
+            except Exception:
+                pass
+        source_config_name = source_config_name or base
+        records: dict[str, dict] = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -62,7 +76,8 @@ def _records_by_id(records_dir: Path) -> dict[str, dict]:
             except Exception:
                 continue
             key = f"{record.model}|{record.policy}|{record.context_length}"
-            out[key] = {field: getattr(record, field) for field in QUALITY_FIELDS}
+            records[key] = {field: getattr(record, field) for field in QUALITY_FIELDS}
+        out[source_config_name] = records
     return out
 
 
@@ -75,8 +90,8 @@ def main() -> int:
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
-    committed = _records_by_id(results_dir)
-    if not committed:
+    committed_by_config = _records_by_config(results_dir)
+    if not committed_by_config:
         print(f"no committed records found under {results_dir}")
         return 1
 
@@ -97,6 +112,12 @@ def main() -> int:
                 output_dir=Path(output_dir) / config_name,
                 write=True,
             )
+            committed = committed_by_config.get(config_name)
+            if committed is None:
+                failures.append(
+                    f"no committed baseline for {config_name}; cannot verify"
+                )
+                continue
             for outcome in outcomes:
                 fresh = outcome.record
                 key = f"{fresh.model}|{fresh.policy}|{fresh.context_length}"

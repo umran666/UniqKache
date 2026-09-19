@@ -89,6 +89,9 @@ class _BuiltModel:
     tokenizer: str | None
     config: dict[str, Any]
     cache_config_factory: Any  # Callable[[capacity, sinks, dtype, device], CacheConfig]
+    # True when the model came from uniqkache.models.hf_backend, whose K/V mirror
+    # overstates the recorded cache memory and must be annotated on the record.
+    is_hf_backend: bool = False
 
 
 def _build_synthetic(spec: RunSpec, dtype: torch.dtype, device: str) -> _BuiltModel:
@@ -422,7 +425,17 @@ def run_spec(
             "quality_is_interpretable": quality.is_interpretable if quality else None,
             "quality_caveat": quality.caveat if quality else None,
         },
-        notes=spec.notes,
+        # The HF backend mirrors K/V into the UniqKache cache in addition to the
+        # model's own DynamicCache, so its memory figures overstate the cache's
+        # footprint. The adapter's docstring promises records carry that caveat;
+        # append it rather than overwrite any notes the spec author wrote.
+        notes=(
+            (spec.notes + " " if spec.notes else "")
+            + "memory figures include the HF backend's K/V mirror; see "
+            "uniqkache.models.hf_backend's docstring"
+        )
+        if built.is_hf_backend
+        else spec.notes,
         status="research prototype" if spec.policy in {"adaptive"} else "experimental",
     )
 

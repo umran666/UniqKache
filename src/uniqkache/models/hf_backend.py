@@ -316,6 +316,7 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
         tokenizer=backend.identifier if backend.tokenizer is not None else None,
         config=backend.config,
         cache_config_factory=cache_config_factory,
+        is_hf_backend=True,
     )
 
 

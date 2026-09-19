@@ -92,7 +92,7 @@ class MemorySnapshot:
 
 def snapshot(cache: KVCache, device: str | torch.device | None = None) -> MemorySnapshot:
     """Capture memory state for ``cache`` and its device."""
-    resolved = resolve_device(device if device is not None else cache.config.device)
+    resolved = resolve_device(device) if device is not None else cache.store.device
     stats = cache.stats()
     return MemorySnapshot(
         device_type=resolved.type,

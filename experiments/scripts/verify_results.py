@@ -111,9 +111,16 @@ def main() -> int:
                 output_dir=Path(output_dir) / config_name,
                 write=True,
             )
-            committed = committed_by_config.get(config_name)
+            # The committed baselines are keyed by the config's ``name`` field
+            # (e.g. ``correctness-non-evicting``), not by the config filename
+            # (``correctness.json``). Match on the name so the lookup in
+            # ``committed_by_config`` succeeds.
+            committed = committed_by_config.get(config.name)
             if committed is None:
-                failures.append(f"no committed baseline for {config_name}; cannot verify")
+                failures.append(
+                    f"no committed baseline for {config.name!r} "
+                    f"(config file {config_name}); cannot verify"
+                )
                 continue
             for outcome in outcomes:
                 fresh = outcome.record

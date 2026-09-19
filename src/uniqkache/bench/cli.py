@@ -174,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["int8"],
         help="Compress the cache before generation. Off by default.",
     )
+    parser.add_argument(
+        "--capacity-schedule",
+        default=None,
+        help="Layer-wise capacity allocation schedule (e.g. 'uniform', 'attention_proportional'). Default: %(default)s",
+    )
 
     quality = parser.add_argument_group("quality measurement")
     quality.add_argument(
@@ -240,6 +245,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         context_length=args.context_length,
         batch_size=args.batch_size,
         capacity=args.capacity,
+        capacity_schedule=args.capacity_schedule,
         keep_ratio=args.keep_ratio,
         memory_budget_mb=args.memory_budget_mb,
         attention_sinks=args.attention_sinks,
@@ -315,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
                 quality_chunk_size=args.quality_chunk_size,
                 model_revision=args.model_revision,
                 offline=args.offline,
+                capacity_schedule=args.capacity_schedule,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

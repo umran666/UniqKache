@@ -196,7 +196,7 @@ class HFBackend:
     def cache_config(
         self,
         *,
-        capacity: int | None = None,
+        capacity: int | list[int] | None = None,
         attention_sinks: int = 0,
         dtype: torch.dtype | None = None,
         device: str | None = None,

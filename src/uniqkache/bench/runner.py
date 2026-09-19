@@ -123,7 +123,7 @@ def _build_synthetic(spec: RunSpec, dtype: torch.dtype, device: str) -> _BuiltMo
     model = build_model(config=config, seed=spec.seed, device=device, dtype=dtype)
 
     def cache_config_factory(
-        capacity: int | None, sinks: int, cache_dtype: torch.dtype, cache_device: str
+        capacity: int | list[int] | None, sinks: int, cache_dtype: torch.dtype, cache_device: str
     ) -> CacheConfig:
         return config.cache_config(
             capacity=capacity,
@@ -165,7 +165,7 @@ def _make_cache(
     spec: RunSpec,
     built: _BuiltModel,
     *,
-    capacity: int | None,
+    capacity: int | list[int] | None,
     dtype: torch.dtype,
     device: str,
 ) -> KVCache:
@@ -399,10 +399,17 @@ def run_spec(
             raise ConfigError(f"unknown compressor {spec.compressor!r}; only 'int8' is implemented")
         gen_cache.compressor = Int8KVCompressor()
 
+    allocation_strategy = None
+    if spec.capacity_schedule is not None:
+        from uniqkache.allocation import build_allocation_strategy
+
+        allocation_strategy = build_allocation_strategy(spec.capacity_schedule)
+
     engine = GenerationEngine(
         built.model,
         gen_cache,
         GenerationConfig(max_new_tokens=spec.max_new_tokens, seed=spec.seed),
+        allocation_strategy=allocation_strategy,
     )
     generation = engine.generate(prompt)
     latencies = LatencyStats.from_samples(generation.per_step_ms)
@@ -427,7 +434,10 @@ def run_spec(
     quality: QualityResult | None = None
     reference: float | None = None
     if spec.measure_quality:
-        quality_cache = _make_cache(spec, built, capacity=capacity, dtype=dtype, device=device)
+        quality_capacity = gen_cache.capacity if allocation_strategy is not None else capacity
+        quality_cache = _make_cache(
+            spec, built, capacity=quality_capacity, dtype=dtype, device=device
+        )
         if spec.quality_metric == "needle_retrieval":
             # The needle task builds its own haystack from the same length and
             # seed knobs, so the run stays reproducible from its spec. The
@@ -487,7 +497,8 @@ def run_spec(
         precision=spec.precision,
         policy=spec.policy,
         policy_config=_policy_config(gen_cache),
-        capacity=capacity,
+        capacity=gen_cache.capacity,
+        capacity_schedule=spec.capacity_schedule,
         attention_sinks=spec.attention_sinks,
         memory_budget_mb=spec.memory_budget_mb,
         compressor=spec.compressor,
@@ -501,6 +512,8 @@ def run_spec(
         cache_bytes_offloaded=cache_stats.get("bytes_offloaded"),
         cache_compression_ratio=cache_stats.get("compression_ratio"),
         cache_final_tokens=cache_stats.get("total_tokens"),
+        tokens_per_layer=cache_stats.get("tokens_per_layer", []),
+        utilization_per_layer=cache_stats.get("utilization_per_layer"),
         ttft_ms=generation.ttft_ms,
         tpot_ms=generation.tpot_ms,
         prefill_ms=generation.prefill_ms,

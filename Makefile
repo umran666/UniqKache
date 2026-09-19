@@ -44,8 +44,8 @@ test-fast: ## Run unit + regression tests only (no GPU, no downloads)
 	$(PYTHON) -m pytest tests/unit tests/regression -q
 
 .PHONY: test-cov
-test-cov: ## Run tests with coverage report
-	$(PYTHON) -m pytest --cov --cov-report=term-missing
+test-cov: ## Run tests with coverage report and floor gate
+	$(PYTHON) -m pytest tests/unit tests/regression tests/integration -q --cov=uniqkache --cov-report=term-missing --cov-fail-under=70
 
 .PHONY: lint
 lint: ## Lint with ruff

@@ -146,6 +146,8 @@ jobs:
         run: make typecheck
       - name: Tests via make
         run: make test-fast
+      - name: Coverage via make
+        run: make test-cov
       - name: Correctness benchmark via make
         run: make bench-correctness OUTDIR=/tmp/uniqkache-make
       - name: Results table via make

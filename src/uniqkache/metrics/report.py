@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from uniqkache.metrics.record import BenchmarkRecord, validate_record
+from uniqkache.metrics.record import BenchmarkRecord, MetricAggregate, validate_record
 from uniqkache.utils.errors import ConfigError
 from uniqkache.utils.logging import get_logger
 
@@ -109,6 +109,21 @@ def _fmt(value: float | int | None, unit: str = "", digits: int = 2) -> str:
     return f"{value:.{digits}f}{unit}"
 
 
+def _fmt_val_or_agg(
+    value: float | int | None,
+    agg: MetricAggregate | None = None,
+    *,
+    digits: int = 2,
+    unit: str = "",
+) -> str:
+    """Format a metric value, rendering mean +/- std when multiple repetitions exist."""
+    if agg is not None and agg.std is not None and agg.values and len(agg.values) > 1:
+        return f"{agg.mean:.{digits}f} +/- {agg.std:.{digits}f}{unit}"
+    if agg is not None and agg.mean is not None:
+        return f"{agg.mean:.{digits}f}{unit}"
+    return _fmt(value, unit=unit, digits=digits)
+
+
 def records_to_markdown(records: list[BenchmarkRecord], *, title: str = "Benchmark results") -> str:
     """Render records as a Markdown table with a quality column.
 
@@ -119,20 +134,41 @@ def records_to_markdown(records: list[BenchmarkRecord], *, title: str = "Benchma
     if not records:
         return f"# {title}\n\n_No records._\n"
 
+    has_aggregates = any(r.repetitions > 1 or bool(r.aggregates) for r in records)
+
     lines = [
         f"# {title}",
         "",
         f"{len(records)} run(s) across {len(group_by_policy(records))} policy/policies.",
         "",
-        "| policy | model | ctx | cap | sink | precision | device | "
-        "peak mem | cache mem | compr. | TTFT (ms) | TPOT (ms) | tok/s | quality |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
+
+    if has_aggregates:
+        lines.extend(
+            [
+                "| policy | model | ctx | cap | sink | precision | device | "
+                "peak mem | cache mem | compr. | TTFT (ms) +/- std | TPOT (ms) +/- std | tok/s +/- std | quality +/- std |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "| policy | model | ctx | cap | sink | precision | device | "
+                "peak mem | cache mem | compr. | TTFT (ms) | TPOT (ms) | tok/s | quality |",
+                "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+            ]
+        )
 
     for record in sorted(records, key=lambda r: (r.policy, r.context_length or 0)):
         quality = "n/a"
-        if record.quality_metric and record.quality_value is not None:
-            quality = f"{record.quality_metric}={record.quality_value:.4f}"
+        q_agg = record.aggregates.get("quality_value")
+        if record.quality_metric and (record.quality_value is not None or q_agg is not None):
+            if q_agg is not None and q_agg.values and len(q_agg.values) > 1:
+                quality = f"{record.quality_metric}={q_agg.mean:.4f} +/- {q_agg.std:.4f}"
+            elif record.quality_value is not None:
+                quality = f"{record.quality_metric}={record.quality_value:.4f}"
+
             if not record.weights_are_random:
                 delta = record.quality_delta
                 if delta is not None:
@@ -163,9 +199,11 @@ def records_to_markdown(records: list[BenchmarkRecord], *, title: str = "Benchma
                     " MiB",
                 ),
                 ratio=_fmt(record.cache_compression_ratio, "x"),
-                ttft=_fmt(record.ttft_ms),
-                tpot=_fmt(record.tpot_ms, digits=3),
-                tps=_fmt(record.tokens_per_second, digits=1),
+                ttft=_fmt_val_or_agg(record.ttft_ms, record.aggregates.get("ttft_ms")),
+                tpot=_fmt_val_or_agg(record.tpot_ms, record.aggregates.get("tpot_ms"), digits=3),
+                tps=_fmt_val_or_agg(
+                    record.tokens_per_second, record.aggregates.get("tokens_per_second"), digits=1
+                ),
                 quality=quality,
             )
         )

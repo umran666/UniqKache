@@ -134,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed. Default: %(default)s")
     parser.add_argument(
+        "--repetitions",
+        type=int,
+        default=1,
+        help="Number of repetitions with varying seeds (seed, seed+1, ...). Default: %(default)s",
+    )
+    parser.add_argument(
         "--max-new-tokens",
         type=int,
         default=8,
@@ -246,6 +252,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         precision=args.precision,
         device=args.device,
         seed=args.seed,
+        repetitions=args.repetitions,
         max_new_tokens=args.max_new_tokens,
         task=args.task,
         dataset=args.dataset,
@@ -305,6 +312,7 @@ def main(argv: list[str] | None = None) -> int:
                 precision=args.precision,
                 device=args.device,
                 seed=args.seed,
+                repetitions=args.repetitions,
                 max_new_tokens=args.max_new_tokens,
                 task=args.task,
                 dataset=args.dataset,

@@ -217,6 +217,31 @@ A result is only acceptable as evidence if:
 Report the raw table, not a summary of it. If a row is inconvenient, that is the row the
 reviewer most wants to see.
 
+### Verification against numerical drift (`make verify-results`)
+
+CI enforces that documented experiment configurations reproduce the committed results without
+numerical drift (F14). Before submitting any PR that alters cache runtime behaviour, updates
+benchmark configs, or touches result artifacts:
+
+```bash
+make verify-results
+# or directly:
+python experiments/scripts/verify_results.py --results-dir experiments/results
+```
+
+This target re-runs the committed experiment configurations (`experiments/configs/correctness.json`,
+`experiments/configs/needle_comparison.json`) and diffs fresh outcomes against the committed
+artifacts in `experiments/results/`.
+
+- **Quality fields must match exactly:** `quality_value`, `quality_reference`, `policy`,
+  `capacity`, `context_length`, and `cache_final_tokens` are strictly checked.
+- **Timing fields are excluded by design:** `ttft_ms`, `tpot_ms`, `tokens_per_second`, and
+  `peak_memory_bytes` are subject to run-to-run hardware variance at small scale (F10) and
+  are excluded from the diff, with that exclusion stated in the target's output.
+
+If `make verify-results` fails, either a regression was introduced or the committed baselines
+need deliberate updating.
+
 ### What counts as a win
 
 Only one of these, and only when the others are stated alongside:
@@ -282,6 +307,7 @@ Copy this into your PR description:
 
 ## Tests
 - [ ] `pytest -q` passes
+- [ ] `make verify-results` passes (if results or benchmarks are touched)
 - [ ] New/updated tests: <names>
 - [ ] Regression test added for a bug fix: <name or n/a>
 

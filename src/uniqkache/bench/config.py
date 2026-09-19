@@ -84,6 +84,7 @@ class RunSpec:
     measure_quality: bool = True
     quality_chunk_size: int = 1
     compressor: str | None = None
+    capacity_schedule: str | None = None
     model_config: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
@@ -126,6 +127,20 @@ class RunSpec:
             raise ConfigError(f"needle_depth must be in [0, 1], got {self.needle_depth}")
         if self.quality_chunk_size < 1:
             raise ConfigError(f"quality_chunk_size must be >= 1, got {self.quality_chunk_size}")
+
+        if self.capacity_schedule is not None:
+            from uniqkache.allocation.registry import (
+                available_allocation_strategies,
+                resolve_allocation_strategy_name,
+            )
+
+            canonical_schedule = resolve_allocation_strategy_name(self.capacity_schedule)
+            if canonical_schedule not in available_allocation_strategies():
+                raise ConfigError(
+                    f"unknown capacity_schedule {self.capacity_schedule!r}. "
+                    f"Available: {', '.join(available_allocation_strategies())}"
+                )
+            self.capacity_schedule = canonical_schedule
 
         # Resolve the policy name early so a typo fails before any model loads.
         try:

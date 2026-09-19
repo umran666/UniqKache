@@ -89,7 +89,7 @@ class SyntheticConfig:
     def cache_config(
         self,
         *,
-        capacity: int | None = None,
+        capacity: int | list[int] | None = None,
         attention_sinks: int = 0,
         dtype: torch.dtype = torch.float32,
         device: str = "cpu",

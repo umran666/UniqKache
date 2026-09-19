@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.models.base import LanguageModel
+
+if TYPE_CHECKING:
+    from uniqkache.allocation.base import BaseAllocationStrategy
 from uniqkache.utils.device import (
     peak_memory_bytes,
     reset_peak_memory,
@@ -143,14 +146,18 @@ class GenerationEngine:
         config: GenerationConfig | None = None,
         *,
         record_attention: bool | None = None,
+        allocation_strategy: BaseAllocationStrategy | None = None,
     ) -> None:
         self.model = model
         self.cache = cache
         self.config = config or GenerationConfig()
+        self.allocation_strategy = allocation_strategy
 
         if record_attention is None:
             policy = cache.policy
-            record_attention = bool(policy is not None and policy.uses_attention)
+            record_attention = bool(
+                (policy is not None and policy.uses_attention) or allocation_strategy is not None
+            )
         self.record_attention = record_attention
 
         self.device = resolve_device(cache.config.device)
@@ -194,6 +201,16 @@ class GenerationEngine:
         prefill_ms = (time.perf_counter() - t_start) * 1000.0
         ttft_ms = prefill_ms
         self._absorb_attention(weights, mode="all_queries")
+
+        if self.allocation_strategy is not None:
+            total_budget = self.cache.config.total_capacity()
+            if total_budget is not None:
+                new_caps = self.allocation_strategy.allocate(
+                    total_budget,
+                    self.cache,
+                    attention_sinks=self.cache.config.attention_sinks,
+                )
+                self.cache.set_capacity(new_caps)
 
         next_token = self._select_token(logits[:, -1, :])
         generated.append(next_token)

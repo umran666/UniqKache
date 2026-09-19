@@ -24,6 +24,7 @@ import torch
 from uniqkache.bench.cli import main
 from uniqkache.bench.config import load_config
 from uniqkache.bench.runner import run_config
+from uniqkache.metrics.record import validate_record
 from uniqkache.metrics.report import load_records
 from uniqkache.utils.errors import BackendError, ConfigError
 
@@ -162,6 +163,12 @@ class TestNoQualityFlag:
         record = _load_single_record(tmp_path)
         assert record.quality_metric is None
         assert record.quality_value is None
+
+        problems = validate_record(record)
+        assert any(
+            "performance metrics are present but no quality metric was measured" in p
+            for p in problems
+        )
 
 
 class TestNeedleQualityMetric:
@@ -339,6 +346,12 @@ class TestOutputFlags:
         assert '"run_id"' in out  # --print-records emits JSON
         assert "Results: single-run" in out  # --markdown emits the table
 
+        record = _load_single_record(tmp_path)
+        assert record.run_id in out
+        json_str = out[out.find("{") : out.rfind("}") + 1]
+        assert json.loads(json_str)["run_id"] == record.run_id
+        assert "| policy |" in out
+
     def test_integrity_warnings_are_surfaced_on_stderr(self, tmp_path, capsys):
         # --no-quality must surface the "performance without quality" warning.
         assert (
@@ -361,5 +374,7 @@ class TestOutputFlags:
     def test_list_policies_exits_ok_without_running(self, tmp_path, capsys):
         assert main(["--list-policies"]) == 0
         out = capsys.readouterr().out
+        assert "Registered policies:" in out
         assert "full_cache" in out
         assert "sliding_window" in out
+        assert "streaming_llm" in out

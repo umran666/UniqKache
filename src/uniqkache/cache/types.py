@@ -184,6 +184,19 @@ class CacheConfig:
         data["dtype"] = str(self.dtype)
         return data
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CacheConfig:
+        """Construct a CacheConfig from a dictionary, resolving dtype if needed."""
+        d = dict(data)
+        dtype_val = d.get("dtype")
+        if isinstance(dtype_val, str):
+            name = dtype_val.replace("torch.", "")
+            dt = getattr(torch, name, None)
+            if not isinstance(dt, torch.dtype):
+                raise CacheConfigError(f"unknown dtype string in config: {dtype_val!r}")
+            d["dtype"] = dt
+        return cls(**d)
+
 
 # ---------------------------------------------------------------------------
 # Statistics

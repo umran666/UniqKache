@@ -15,6 +15,8 @@ with evictions, so a policy can never observe a stale length.
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 
 from uniqkache.utils.errors import CacheStateError
@@ -216,6 +218,69 @@ class LayerMetadata:
         self._hit_count = self._hit_count.to(device)
         self._device = device
         return self
+
+    def state_dict(self) -> dict[str, Any]:
+        """Serialisable dictionary of metadata signals."""
+        return {
+            "num_sinks": self._num_sinks,
+            "positions": self._positions.clone(),
+            "last_access": self._last_access.clone(),
+            "cum_attention": self._cum_attention.clone(),
+            "hit_count": self._hit_count.clone(),
+        }
+
+    def load_state_dict(
+        self,
+        state: dict[str, Any],
+        *,
+        device: str | torch.device | None = None,
+        expected_num_tokens: int | None = None,
+    ) -> None:
+        """Restore metadata signals from a state dictionary.
+
+        Parameters
+        ----------
+        state:
+            Dictionary produced by :meth:`state_dict`.
+        device:
+            Target device for the restored tensors. Defaults to current device.
+        expected_num_tokens:
+            Optional token count to validate metadata lengths against.
+        """
+        target_device = self._device if device is None else torch.device(device)
+        self._device = target_device
+
+        for key in ("positions", "last_access", "cum_attention", "hit_count"):
+            if key not in state:
+                raise CacheStateError(f"metadata state dictionary missing key {key!r}")
+
+        positions = state["positions"].to(device=target_device, dtype=torch.long)
+        last_access = state["last_access"].to(device=target_device, dtype=torch.long)
+        cum_attention = state["cum_attention"].to(device=target_device, dtype=torch.float32)
+        hit_count = state["hit_count"].to(device=target_device, dtype=torch.long)
+
+        num = int(positions.shape[0])
+        for name, tensor in (
+            ("last_access", last_access),
+            ("cum_attention", cum_attention),
+            ("hit_count", hit_count),
+        ):
+            if int(tensor.shape[0]) != num:
+                raise CacheStateError(
+                    f"metadata tensor {name!r} has length {tensor.shape[0]}, "
+                    f"expected {num} matching positions"
+                )
+
+        if expected_num_tokens is not None and num != expected_num_tokens:
+            raise CacheStateError(
+                f"metadata has {num} tokens, expected {expected_num_tokens} matching layer occupancy"
+            )
+
+        self._num_sinks = state.get("num_sinks", self._num_sinks)
+        self._positions = positions
+        self._last_access = last_access
+        self._cum_attention = cum_attention
+        self._hit_count = hit_count
 
 
 def reduce_attention(

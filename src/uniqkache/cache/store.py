@@ -17,17 +17,16 @@ has not cached fewer tokens, and a method that evicts has not lost precision.
 :meth:`LayerStorage.num_tokens` and :meth:`LayerStorage.bytes` report the two
 independently, and ``stats()`` exposes both.
 
-Known limitation (deliberate, milestone 1)
-------------------------------------------
-Appending uses :func:`torch.cat`, which reallocates and copies the whole layer on
-every decode step: O(T) per step, O(T^2) per sequence. It is the simplest thing
-that is *correct*, and correctness is the milestone-1 goal.
-
-Consequence for readers of our numbers: measured decode throughput reflects this
-reference implementation, **not** an optimised kernel. Latency comparisons in
-this repository are therefore comparisons *between policies under an identical
-store*, which is the quantity an ablation needs. A preallocated ring buffer is
-tracked in ``docs/architecture.md``.
+Storage allocation and append performance
+-----------------------------------------
+Storage is preallocated using a contiguous buffer along the sequence dimension:
+* When ``capacity`` is configured (bounded cache), buffers are allocated up to
+  the capacity upfront, yielding zero allocations and O(1) per-token appends
+  during decode.
+* When ``capacity`` is None (unbounded cache), buffers grow via geometric
+  doubling, amortising allocation costs to O(1) per token (O(T) total sequence time).
+* Eviction (:meth:`LayerStorage.keep`) gathers surviving tokens in-place at the
+  front of the buffer without reallocating, maintaining buffer capacity in steady state.
 """
 
 from __future__ import annotations
@@ -102,10 +101,11 @@ class LayerStorage:
     device: torch.device
     num_sinks: int
     batch_size: int
+    capacity: int | None = None
 
     def __post_init__(self) -> None:
-        self._keys: torch.Tensor | None = None
-        self._values: torch.Tensor | None = None
+        self._keys_buf: torch.Tensor | None = None
+        self._values_buf: torch.Tensor | None = None
         self._compressed: CompressionResult | None = None
         self._offloaded = False
         self.metadata = LayerMetadata(num_sinks=self.num_sinks, device=self.device)
@@ -115,8 +115,8 @@ class LayerStorage:
     @property
     def keys(self) -> torch.Tensor | None:
         """Materialised keys, dequantising on demand when compressed."""
-        if self._keys is not None:
-            return self._keys
+        if self._keys_buf is not None:
+            return self._keys_buf[:, :, : self.num_tokens, :]
         if self._compressed is not None:
             return self._dequantize()[0]
         return None
@@ -124,11 +124,27 @@ class LayerStorage:
     @property
     def values(self) -> torch.Tensor | None:
         """Materialised values, dequantising on demand when compressed."""
-        if self._values is not None:
-            return self._values
+        if self._values_buf is not None:
+            return self._values_buf[:, :, : self.num_tokens, :]
         if self._compressed is not None:
             return self._dequantize()[1]
         return None
+
+    @property
+    def _keys(self) -> torch.Tensor | None:
+        return self.keys
+
+    @_keys.setter
+    def _keys(self, val: torch.Tensor | None) -> None:
+        self._keys_buf = val
+
+    @property
+    def _values(self) -> torch.Tensor | None:
+        return self.values
+
+    @_values.setter
+    def _values(self, val: torch.Tensor | None) -> None:
+        self._values_buf = val
 
     @property
     def num_tokens(self) -> int:
@@ -137,7 +153,7 @@ class LayerStorage:
 
     @property
     def is_initialized(self) -> bool:
-        return self._keys is not None or self._compressed is not None
+        return self._keys_buf is not None or self._compressed is not None
 
     @property
     def is_compressed(self) -> bool:
@@ -151,8 +167,8 @@ class LayerStorage:
     @property
     def resident_device(self) -> torch.device:
         """Where the tensors physically live right now."""
-        if self._keys is not None:
-            return self._keys.device
+        if self._keys_buf is not None:
+            return self._keys_buf.device
         if self._compressed is not None:
             return self._compressed.keys.data.device  # type: ignore[union-attr,attr-defined]
         return self.device
@@ -161,9 +177,13 @@ class LayerStorage:
         """Resident bytes held by this layer, honouring compression."""
         if self._compressed is not None:
             return int(self._compressed.compressed_bytes)
-        if self._keys is None or self._values is None:
+        if self._keys_buf is None or self._values_buf is None:
             return 0
-        return tensor_bytes(self._keys) + tensor_bytes(self._values)
+        keys = self.keys
+        values = self.values
+        if keys is None or values is None:
+            return 0
+        return tensor_bytes(keys) + tensor_bytes(values)
 
     def uncompressed_bytes(self) -> int:
         """Bytes this layer *would* occupy at the configured dtype."""
@@ -204,17 +224,33 @@ class LayerStorage:
                 "Compression must preserve the token set."
             )
         self._compressed = result
-        self._keys = None
-        self._values = None
+        self._keys_buf = None
+        self._values_buf = None
 
     def materialize(self) -> None:
         """Expand a compressed representation back to float tensors."""
         if self._compressed is None:
             return
         keys, values = self._dequantize()
-        self._keys = keys.to(dtype=self.dtype, device=self.resident_device)
-        self._values = values.to(dtype=self.dtype, device=self.resident_device)
+        target_device = self.resident_device
+        keys = keys.to(dtype=self.dtype, device=target_device)
+        values = values.to(dtype=self.dtype, device=target_device)
         self._compressed = None
+        needed = int(keys.shape[2])
+        init_cap = self.capacity if self.capacity is not None else 64
+        alloc_cap = max(needed, init_cap)
+        self._keys_buf = torch.empty(
+            (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+            dtype=self.dtype,
+            device=target_device,
+        )
+        self._values_buf = torch.empty(
+            (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+            dtype=self.dtype,
+            device=target_device,
+        )
+        self._keys_buf[:, :, :needed, :] = keys
+        self._values_buf[:, :, :needed, :] = values
 
     # -- mutation ----------------------------------------------------------
 
@@ -260,13 +296,49 @@ class LayerStorage:
         keys = keys.to(device=self.device, dtype=self.dtype)
         values = values.to(device=self.device, dtype=self.dtype)
         num_new = int(keys.shape[2])
+        cur_len = self.num_tokens
+        needed = cur_len + num_new
 
-        if self._keys is None:
-            self._keys, self._values = keys, values
+        if self._keys_buf is None:
+            init_cap = self.capacity if self.capacity is not None else 64
+            alloc_cap = max(needed, init_cap)
+            self._keys_buf = torch.empty(
+                (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+                dtype=self.dtype,
+                device=self.device,
+            )
+            self._values_buf = torch.empty(
+                (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+                dtype=self.dtype,
+                device=self.device,
+            )
         else:
-            assert self._keys is not None and self._values is not None
-            self._keys = torch.cat([self._keys, keys], dim=2)
-            self._values = torch.cat([self._values, values], dim=2)
+            if self._keys_buf.device != self.device:
+                self._keys_buf = self._keys_buf.to(self.device)
+                self._values_buf = self._values_buf.to(self.device)
+
+            if needed > self._keys_buf.shape[2]:
+                cur_cap = self._keys_buf.shape[2]
+                new_cap = max(needed, cur_cap * 2)
+                new_keys = torch.empty(
+                    (self.batch_size, self.num_kv_heads, new_cap, self.head_dim),
+                    dtype=self.dtype,
+                    device=self.device,
+                )
+                new_values = torch.empty(
+                    (self.batch_size, self.num_kv_heads, new_cap, self.head_dim),
+                    dtype=self.dtype,
+                    device=self.device,
+                )
+                if cur_len > 0:
+                    new_keys[:, :, :cur_len, :] = self._keys_buf[:, :, :cur_len, :]
+                    new_values[:, :, :cur_len, :] = self._values_buf[:, :, :cur_len, :]
+                self._keys_buf = new_keys
+                self._values_buf = new_values
+
+        assert self._keys_buf is not None and self._values_buf is not None
+        self._keys_buf[:, :, cur_len:needed, :] = keys
+        self._values_buf[:, :, cur_len:needed, :] = values
 
         self.metadata.append(num_new, positions=positions, step=step)
         self._offloaded = False
@@ -313,12 +385,16 @@ class LayerStorage:
                 compressed_bytes=int(gathered_keys.bytes()) + int(gathered_values.bytes()),
             )
         else:
-            if self._keys is None or self._values is None:
+            if self._keys_buf is None or self._values_buf is None:
                 raise CacheStateError(
                     f"layer {self.layer_idx} is marked initialised but holds no tensors"
                 )
-            self._keys = self._keys[:, :, indices, :].contiguous()
-            self._values = self._values[:, :, indices, :].contiguous()
+            kept = int(indices.numel())
+            if kept > 0:
+                surviving_keys = self._keys_buf[:, :, indices, :].clone()
+                surviving_values = self._values_buf[:, :, indices, :].clone()
+                self._keys_buf[:, :, :kept, :] = surviving_keys
+                self._values_buf[:, :, :kept, :] = surviving_values
 
         self.metadata.keep(indices)
         return before - int(indices.numel())
@@ -331,8 +407,8 @@ class LayerStorage:
 
     def clear(self) -> None:
         """Drop all tokens."""
-        self._keys = None
-        self._values = None
+        self._keys_buf = None
+        self._values_buf = None
         self._compressed = None
         self._offloaded = False
         self.metadata.clear()
@@ -362,9 +438,9 @@ class LayerStorage:
                 uncompressed_bytes=self._compressed.uncompressed_bytes,
                 compressed_bytes=self._compressed.compressed_bytes,
             )
-        elif self._keys is not None and self._values is not None:
-            self._keys = self._keys.to(device)
-            self._values = self._values.to(device)
+        elif self._keys_buf is not None and self._values_buf is not None:
+            self._keys_buf = self._keys_buf.to(device)
+            self._values_buf = self._values_buf.to(device)
         else:
             self.device = device
             self.metadata.to(device)
@@ -390,8 +466,22 @@ class LayerStorage:
                 f"{self.num_tokens} tokens but was given {keys.shape[2]}. "
                 "Compression changes representation, not occupancy."
             )
-        self._keys = keys
-        self._values = values
+        target_device = keys.device
+        needed = int(keys.shape[2])
+        init_cap = self.capacity if self.capacity is not None else 64
+        alloc_cap = max(needed, init_cap)
+        self._keys_buf = torch.empty(
+            (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+            dtype=self.dtype,
+            device=target_device,
+        )
+        self._values_buf = torch.empty(
+            (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
+            dtype=self.dtype,
+            device=target_device,
+        )
+        self._keys_buf[:, :, :needed, :] = keys
+        self._values_buf[:, :, :needed, :] = values
         self._compressed = None
 
 
@@ -415,6 +505,7 @@ class KVStore:
                 device=self.device,
                 num_sinks=config.attention_sinks,
                 batch_size=config.batch_size,
+                capacity=config.capacity,
             )
             for idx in range(config.num_layers)
         ]

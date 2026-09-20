@@ -310,9 +310,9 @@ Stated plainly, because a limitation discovered by a reader is a defect in the d
   timing columns of the retention sweep were withdrawn rather than reported. Memory and
   quality are deterministic and reproducible; timing is not. See
   [docs/research.md, F10](docs/research.md#failed-experiments).
-- **Append is O(T) per step, O(T²) per sequence.** `LayerStorage.append` uses `torch.cat`, so
-  a long context copies the whole cache every step. Latency comparisons are therefore valid
-  *between policies under an identical store*, and not as absolute throughput numbers.
+- **Append is amortised O(1) per step via preallocated buffers.** Bounded caches preallocate
+  to capacity upfront (zero decode allocations), and unbounded caches grow via geometric
+  doubling. Eviction gathers surviving tokens in-place without reallocating.
 - **Quality is perplexity on a random model.** Needle retrieval, exact match and task accuracy
   are implemented in `metrics/quality.py` but not yet wired into a real-model experiment.
 - **Single device, single process.** No sharding, no paged allocation, no serving integration.

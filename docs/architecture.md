@@ -159,10 +159,16 @@ Two behaviours worth knowing:
   therefore a decompress-append-recompress cycle. This is correct but not cheap; it is
   documented on the method rather than hidden.
 
-**Known limitation — `append` is O(T) per step, O(T²) per sequence.** It uses `torch.cat`, which
-copies the whole cache on every append. A paged store would fix this; UniqKache does not have
-one. The consequence is stated where it matters: **latency comparisons are valid between
-policies under an identical store, and are not absolute throughput numbers.**
+- **Preallocated buffer and amortised O(1) append.** Storage is backed by contiguous
+  preallocated buffers along the sequence dimension:
+  - When `capacity` is configured (bounded cache), buffers are allocated up to `capacity`
+    upfront, yielding zero allocations and true O(1) per-token appends during decode.
+  - When `capacity` is `None` (unbounded cache), buffers grow via geometric doubling,
+    amortising reallocation costs to O(1) per token (O(T) total sequence time).
+  - Eviction (`LayerStorage.keep`) gathers surviving tokens in-place at the front of the
+    buffer without reallocating, preserving capacity in steady state.
+  - This replaces the milestone-1 `torch.cat` path, eliminating the O(T²) per-sequence
+    reallocation bottleneck while maintaining identical numerical outputs and exact byte accounting.
 
 ### `CacheConfig` — the accounting
 

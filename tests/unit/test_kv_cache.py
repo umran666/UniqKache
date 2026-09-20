@@ -387,3 +387,136 @@ class TestCacheConfig:
         fp32 = CacheConfig(num_layers=1, num_kv_heads=2, head_dim=8, dtype=torch.float32)
         fp16 = CacheConfig(num_layers=1, num_kv_heads=2, head_dim=8, dtype=torch.float16)
         assert fp32.bytes_per_token() == 2 * fp16.bytes_per_token()
+
+
+# ---------------------------------------------------------------------------
+# Preallocated buffer and memory scaling
+# ---------------------------------------------------------------------------
+
+
+class TestPreallocatedBuffer:
+    def test_bounded_storage_preallocates_to_capacity(self, bounded_config, kv_factory):
+        from uniqkache.cache.store import LayerStorage
+
+        storage = LayerStorage(
+            layer_idx=0,
+            num_kv_heads=bounded_config.num_kv_heads,
+            head_dim=bounded_config.head_dim,
+            dtype=bounded_config.dtype,
+            device=torch.device(bounded_config.device),
+            num_sinks=bounded_config.attention_sinks,
+            batch_size=bounded_config.batch_size,
+            capacity=bounded_config.capacity,
+        )
+        storage.append(kv_factory(4), kv_factory(4))
+        assert storage._keys_buf is not None
+        assert storage._keys_buf.shape[2] == bounded_config.capacity
+        assert storage.num_tokens == 4
+        assert storage.keys.shape[2] == 4
+
+    def test_unbounded_storage_doubles_geometrically(self, kv_factory):
+        from uniqkache.cache.store import LayerStorage
+
+        storage = LayerStorage(
+            layer_idx=0,
+            num_kv_heads=2,
+            head_dim=8,
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            num_sinks=0,
+            batch_size=1,
+            capacity=None,
+        )
+        # Initial append with 10 tokens: max(10, 64) -> 64
+        storage.append(kv_factory(10), kv_factory(10))
+        assert storage._keys_buf is not None
+        assert storage._keys_buf.shape[2] == 64
+        assert storage.num_tokens == 10
+
+        # Append 60 more tokens: needed = 70 > 64 -> max(70, 64 * 2) = 128
+        storage.append(kv_factory(60), kv_factory(60))
+        assert storage._keys_buf.shape[2] == 128
+        assert storage.num_tokens == 70
+        assert storage.keys.shape[2] == 70
+
+    def test_keep_preserves_buffer_capacity(self, bounded_config, kv_factory):
+        from uniqkache.cache.store import LayerStorage
+
+        storage = LayerStorage(
+            layer_idx=0,
+            num_kv_heads=bounded_config.num_kv_heads,
+            head_dim=bounded_config.head_dim,
+            dtype=bounded_config.dtype,
+            device=torch.device(bounded_config.device),
+            num_sinks=bounded_config.attention_sinks,
+            batch_size=bounded_config.batch_size,
+            capacity=bounded_config.capacity,
+        )
+        storage.append(kv_factory(bounded_config.capacity), kv_factory(bounded_config.capacity))
+        buf_cap_before = storage._keys_buf.shape[2]
+        assert buf_cap_before == bounded_config.capacity
+
+        # Evict half of the tokens
+        keep_indices = torch.arange(0, bounded_config.capacity, 2)
+        storage.keep(keep_indices)
+
+        assert storage.num_tokens == len(keep_indices)
+        assert storage._keys_buf.shape[2] == buf_cap_before  # Capacity preserved!
+        assert storage.keys.shape[2] == len(keep_indices)
+
+        # Appending new tokens writes in-place into the existing buffer
+        storage.append(kv_factory(1), kv_factory(1))
+        assert storage._keys_buf.shape[2] == buf_cap_before
+        assert storage.num_tokens == len(keep_indices) + 1
+
+    def test_bytes_accounting_reflects_occupied_tokens_not_buffer_capacity(
+        self, bounded_config, kv_factory
+    ):
+        from uniqkache.cache.store import LayerStorage
+
+        storage = LayerStorage(
+            layer_idx=0,
+            num_kv_heads=bounded_config.num_kv_heads,
+            head_dim=bounded_config.head_dim,
+            dtype=bounded_config.dtype,
+            device=torch.device(bounded_config.device),
+            num_sinks=bounded_config.attention_sinks,
+            batch_size=bounded_config.batch_size,
+            capacity=bounded_config.capacity,
+        )
+        storage.append(kv_factory(2), kv_factory(2))
+        expected_bytes = bounded_config.bytes_per_token_per_layer() * 2
+        assert storage.bytes() == expected_bytes
+
+    def test_append_latency_scales_linearly_not_quadratically(self, kv_factory):
+        import time
+
+        from uniqkache.cache.store import LayerStorage
+
+        storage = LayerStorage(
+            layer_idx=0,
+            num_kv_heads=NUM_KV_HEADS,
+            head_dim=HEAD_DIM,
+            dtype=torch.float32,
+            device=torch.device("cpu"),
+            num_sinks=0,
+            batch_size=1,
+            capacity=1000,
+        )
+        # Measure early 200 steps vs late 200 steps
+        t0 = time.perf_counter()
+        for _ in range(200):
+            storage.append(kv_factory(1), kv_factory(1))
+        early_time = time.perf_counter() - t0
+
+        for _ in range(600):
+            storage.append(kv_factory(1), kv_factory(1))
+
+        t1 = time.perf_counter()
+        for _ in range(200):
+            storage.append(kv_factory(1), kv_factory(1))
+        late_time = time.perf_counter() - t1
+
+        # Under O(T^2) cat with T approaching 1000, late_time would be ~4x-5x early_time.
+        # With preallocated buffer, late_time remains flat (O(1) per token).
+        assert late_time < 3.0 * early_time + 0.05

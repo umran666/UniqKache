@@ -123,10 +123,23 @@ better; for the needle task, higher raw score is already better, so no inversion
 `quality_metric` on the record says which one a reader is looking at; never compare a needle
 delta against a perplexity delta.
 
-**HF runs and network access.** By default a Hugging Face model is resolved with network access
-permitted. `--offline` restricts resolution to the local cache, and the record's
-`model_loaded_offline` field states which mode the run used — a record that needed a download
-is not re-creatable on an air-gapped machine, and the field makes that visible.
+**HF runs and network access.** By default, Hugging Face models are resolved with network access
+permitted (`--offline` is off / `False`). To make a run fully offline and prevent any network I/O:
+- On the CLI: pass `--offline`.
+- In experiment configs (`experiments/configs/*.json`): set `"offline": true` in the run spec.
+
+When offline mode is requested, `local_files_only=True` is threaded directly to Hugging Face's
+`from_pretrained` (for both model weights and tokenizer). If the model or tokenizer is not already
+present in the local cache, the loader raises a `BackendError` rather than silently downloading
+files from the Hub.
+
+The record's `model_loaded_offline` field reflects the mode used:
+- `True` for Hugging Face runs executed with `--offline` / `offline: true`.
+- `False` for Hugging Face runs where network access was permitted (even if weights were cached).
+- `null` for synthetic runs (`synthetic:*`), which use built-in models and never touch the network.
+
+A record that permitted a download is not guaranteed to be re-creatable on an air-gapped or
+metered machine; `model_loaded_offline` makes that provenance visible.
 
 Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_importance`,
 `adaptive`. Aliases: `streamingllm`/`streaming_llm` → `sliding_window`, `h2o`/`heavy_hitter` →
@@ -202,7 +215,7 @@ irreproducible result is not evidence.
 **Identity** — `run_id`, `schema_version`, `timestamp`, `git_commit`, `git_dirty`
 
 **Model** — `model`, `model_revision`, `model_num_parameters`, `model_config`,
-`weights_are_random`, `tokenizer`
+`weights_are_random`, `tokenizer`, `model_loaded_offline`
 
 **Workload** — `task`, `dataset`, `context_length`, `generated_tokens`, `batch_size`,
 `precision`
@@ -212,7 +225,7 @@ irreproducible result is not evidence.
 **Hardware** — `device`, `gpu_name`, `gpu_total_memory_bytes`, `gpu_compute_capability`
 
 **Memory** — `peak_memory_bytes`, `cache_bytes_total`, `cache_bytes_on_device`,
-`cache_bytes_offloaded`, `cache_compression_ratio`, `cache_final_tokens`
+`cache_bytes_offloaded`, `cache_compression_ratio`, `cache_final_tokens`, `mirror_overhead_bytes`
 
 **Latency** — `ttft_ms`, `tpot_ms`, `prefill_ms`, `decode_ms`, `total_ms`, `latency_p50_ms`,
 `latency_p90_ms`, `tokens_per_second`

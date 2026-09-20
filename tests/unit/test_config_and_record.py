@@ -407,3 +407,38 @@ class TestReporting:
         spec = _spec_from_args(args)
         assert spec.model == "org/model"
         assert spec.model_revision == "v2.0.0"
+
+
+class TestOfflineConfigAndRecord:
+    def test_offline_round_trips_through_experiment_config(self):
+        config = ExperimentConfig.from_dict(
+            {
+                "name": "offline-test",
+                "runs": [
+                    {
+                        "model": "org/model",
+                        "offline": True,
+                        "policy": "full_cache",
+                    }
+                ],
+            }
+        )
+        assert config.runs[0].offline is True
+        restored = ExperimentConfig.from_dict(config.to_dict())
+        assert restored.runs[0].offline is True
+
+    def test_benchmark_record_model_loaded_offline_round_trips(self):
+        rec_offline = good_record(model_loaded_offline=True)
+        assert rec_offline.model_loaded_offline is True
+        d = rec_offline.to_dict()
+        assert d["model_loaded_offline"] is True
+        restored = BenchmarkRecord.from_dict(d)
+        assert restored.model_loaded_offline is True
+
+        rec_online = good_record(model_loaded_offline=False)
+        assert rec_online.model_loaded_offline is False
+        assert BenchmarkRecord.from_dict(rec_online.to_dict()).model_loaded_offline is False
+
+        rec_synthetic = good_record(model_loaded_offline=None)
+        assert rec_synthetic.model_loaded_offline is None
+        assert BenchmarkRecord.from_dict(rec_synthetic.to_dict()).model_loaded_offline is None

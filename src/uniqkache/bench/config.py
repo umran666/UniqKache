@@ -52,6 +52,9 @@ class RunSpec:
     model_revision:
         Hugging Face model revision (branch, tag, or commit) to load. Ignored by
         the synthetic backend.
+    offline:
+        Hugging Face models only: resolve strictly from the local cache, never
+        reaching the network. Default is False. Ignored by the synthetic backend.
     keep_ratio:
         Fraction of ``context_length`` to retain. ``1.0`` is a full cache,
         ``0.25`` keeps a quarter. Mutually exclusive with ``capacity``. This is

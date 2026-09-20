@@ -58,7 +58,7 @@ class CacheConfig:
     head_dim: int
     dtype: torch.dtype = torch.float16
     device: str = "cpu"
-    capacity: int | None = None
+    capacity: int | list[int] | None = None
     attention_sinks: int = 0
     batch_size: int = 1
 
@@ -71,16 +71,38 @@ class CacheConfig:
             raise CacheConfigError(f"head_dim must be >= 1, got {self.head_dim}")
         if self.batch_size < 1:
             raise CacheConfigError(f"batch_size must be >= 1, got {self.batch_size}")
-        if self.capacity is not None and self.capacity < 1:
-            raise CacheConfigError(f"capacity must be >= 1 when set, got {self.capacity}")
         if self.attention_sinks < 0:
             raise CacheConfigError(f"attention_sinks must be >= 0, got {self.attention_sinks}")
-        if self.capacity is not None and self.attention_sinks > self.capacity:
-            raise CacheConfigError(
-                "attention_sinks cannot exceed capacity: "
-                f"{self.attention_sinks} > {self.capacity}. "
-                "The protected tokens would leave no room for any evictable token."
-            )
+        if self.capacity is not None:
+            if isinstance(self.capacity, int):
+                if self.capacity < 1:
+                    raise CacheConfigError(f"capacity must be >= 1 when set, got {self.capacity}")
+                if self.attention_sinks > self.capacity:
+                    raise CacheConfigError(
+                        "attention_sinks cannot exceed capacity: "
+                        f"{self.attention_sinks} > {self.capacity}. "
+                        "The protected tokens would leave no room for any evictable token."
+                    )
+            elif isinstance(self.capacity, list):
+                if len(self.capacity) != self.num_layers:
+                    raise CacheConfigError(
+                        f"per-layer capacity list must have length {self.num_layers} (num_layers), "
+                        f"got {len(self.capacity)}"
+                    )
+                for idx, c in enumerate(self.capacity):
+                    if not isinstance(c, int) or c < 1:
+                        raise CacheConfigError(
+                            f"capacity for layer {idx} must be an int >= 1, got {c}"
+                        )
+                    if self.attention_sinks > c:
+                        raise CacheConfigError(
+                            f"attention_sinks cannot exceed capacity for layer {idx}: "
+                            f"{self.attention_sinks} > {c}."
+                        )
+            else:
+                raise CacheConfigError(
+                    f"capacity must be int, list[int], or None, got {type(self.capacity).__name__}"
+                )
 
     # -- shape helpers -----------------------------------------------------
 
@@ -126,7 +148,25 @@ class CacheConfig:
             return 0
         return byte_budget // per_token
 
-    def with_capacity(self, capacity: int | None) -> CacheConfig:
+    def capacity_for_layer(self, layer_idx: int) -> int | None:
+        """Capacity for ``layer_idx``, or ``None`` when unbounded."""
+        if self.capacity is None:
+            return None
+        if isinstance(self.capacity, int):
+            return self.capacity
+        if not 0 <= layer_idx < self.num_layers:
+            raise CacheConfigError(f"layer_idx {layer_idx} out of range [0, {self.num_layers})")
+        return self.capacity[layer_idx]
+
+    def total_capacity(self) -> int | None:
+        """Total token capacity summed across all layers, or ``None`` when unbounded."""
+        if self.capacity is None:
+            return None
+        if isinstance(self.capacity, int):
+            return self.capacity * self.num_layers
+        return sum(self.capacity)
+
+    def with_capacity(self, capacity: int | list[int] | None) -> CacheConfig:
         """Return a copy of this config with a different token capacity."""
         return CacheConfig(
             num_layers=self.num_layers,
@@ -160,7 +200,7 @@ class CacheStats:
 
     num_layers: int
     tokens_per_layer: list[int]
-    capacity: int | None
+    capacity: int | list[int] | None
     total_tokens: int
     max_tokens_in_layer: int
     utilization: float | None
@@ -175,6 +215,7 @@ class CacheStats:
     device: str
     dtype: str
     offloaded_layers: list[int] = field(default_factory=list)
+    utilization_per_layer: list[float] | None = None
 
     @property
     def memory_bytes(self) -> int:

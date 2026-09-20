@@ -120,7 +120,8 @@ class BenchmarkRecord:
     # -- cache configuration ----------------------------------------------
     policy: str = "full_cache"
     policy_config: dict[str, Any] = field(default_factory=dict)
-    capacity: int | None = None
+    capacity: int | list[int] | None = None
+    capacity_schedule: str | None = None
     attention_sinks: int = 0
     compressor: str | None = None
     # The budget the user asked for, in MiB, when the capacity was derived from
@@ -141,6 +142,8 @@ class BenchmarkRecord:
     cache_bytes_offloaded: int | None = None
     cache_compression_ratio: float | None = None
     cache_final_tokens: int | None = None
+    tokens_per_layer: list[int] = field(default_factory=list)
+    utilization_per_layer: list[float] | None = None
     # Extra K/V bytes held on top of the model-native cache (currently: the HF
     # adapter's mirror duplication). Subtract from `cache_bytes_total` for the
     # model-native footprint. None when there is no known holder overhead.

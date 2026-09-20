@@ -133,7 +133,7 @@ class KVCache:
         return len(self._store)
 
     @property
-    def capacity(self) -> int | None:
+    def capacity(self) -> int | list[int] | None:
         return self.config.capacity
 
     def num_tokens(self, layer_idx: int | None = None) -> int:
@@ -393,13 +393,24 @@ class KVCache:
         resident = self._store.bytes_total()
         ratio = (uncompressed / resident) if resident > 0 else 1.0
 
+        utilization: float | None = None
+        utilization_per_layer: list[float] | None = None
+        if capacity is not None:
+            tot_cap = self.config.total_capacity()
+            utilization = (total / tot_cap) if tot_cap else None
+            layer_utils: list[float] = []
+            for i in range(len(tokens)):
+                cap_i = self.config.capacity_for_layer(i)
+                layer_utils.append((tokens[i] / cap_i) if cap_i else 0.0)
+            utilization_per_layer = layer_utils
+
         return CacheStats(
             num_layers=len(self._store),
             tokens_per_layer=tokens,
             capacity=capacity,
             total_tokens=total,
             max_tokens_in_layer=max_in_layer,
-            utilization=(max_in_layer / capacity) if capacity else None,
+            utilization=utilization,
             bytes_on_device=self._store.bytes_on_device(),
             bytes_offloaded=self._store.bytes_offloaded(),
             bytes_total=resident,
@@ -411,6 +422,7 @@ class KVCache:
             device=str(self._store.device),
             dtype=str(self.config.dtype),
             offloaded_layers=self._store.offloaded_layers(),
+            utilization_per_layer=utilization_per_layer,
         )
 
     # ------------------------------------------------------------------
@@ -449,7 +461,7 @@ class KVCache:
         """Build the :class:`PolicyState` a policy would see for ``layer_idx``."""
         layer = self._store.layer(layer_idx)
         meta = layer.metadata
-        capacity = self.config.capacity
+        capacity = self.config.capacity_for_layer(layer_idx)
         pressure = 0.0
         if capacity:
             pressure = min(1.0, meta.num_tokens / capacity)
@@ -476,8 +488,7 @@ class KVCache:
         PolicyError
             If a capacity is set but no policy is available to decide.
         """
-        capacity = self.config.capacity
-        if capacity is None:
+        if self.config.capacity is None:
             return 0
         if self.policy is None:
             raise PolicyError(
@@ -487,17 +498,30 @@ class KVCache:
 
         evicted = 0
         for idx in self._target_layers(layer_idx):
-            if self._store.num_tokens(idx) <= capacity:
+            cap = self.config.capacity_for_layer(idx)
+            if cap is None or self._store.num_tokens(idx) <= cap:
                 continue
             state = self.state(idx)
             scores = self.policy.score(state)
-            keep = self.policy.select(scores, capacity, protect=state.is_sink)
+            keep = self.policy.select(scores, cap, protect=state.is_sink)
             evicted += self._store.keep(idx, keep)
 
         if evicted:
             self._evictions += 1
             self._evicted_tokens += evicted
         return evicted
+
+    def set_capacity(self, capacity: int | list[int] | None) -> None:
+        """Update the cache's token budget and re-enforce if bounded."""
+        if capacity is not None and self.policy is None:
+            raise PolicyError(
+                f"a bounded cache (capacity={capacity}) requires a policy. "
+                "Pass policy=FullCachePolicy() if you want no eviction, or use "
+                "capacity=None for an unbounded full cache."
+            )
+        self.config = self.config.with_capacity(capacity)
+        if self.auto_enforce and self.config.capacity is not None:
+            self.enforce_capacity()
 
     def advance(self) -> None:
         """Advance the decode step counter.

@@ -190,8 +190,7 @@ More: [examples/](examples/).
 | --- | --- | --- |
 | `synthetic:tiny` (0.66M params) | **Stable** | Zero download, deterministic. The development and CI target. |
 | `synthetic:small`, `synthetic:medium` | **Stable** | Same code path, larger presets for scaling checks. |
-| Hugging Face dense-attention models (`--model <repo-id>`) | **Experimental** | Forward pass and full-cache path work. Requires `.[hf]` and enough RAM/VRAM. |
-| HF models under an **evicting** policy | **Not yet supported** | Raises `HF_EVICTION_NOT_SUPPORTED` rather than silently running a full cache and reporting it as eviction. `transformers` 5.x requires a `Cache` *layer* implementation; see [docs/architecture.md](docs/architecture.md#hugging-face-backend). |
+| Hugging Face dense-attention models (`--model <repo-id>`) | **Experimental** | Full-cache and bounded evicting policies supported via `UniqKacheLayer` and `UniqKacheHFCache`. Requires `.[hf]` and enough RAM/VRAM. |
 | Hybrid / conv-attention models (e.g. LFM2) | **Not yet supported** | Most layers have no KV cache, so cache-management conclusions would not transfer. |
 
 The synthetic models are real dense-attention transformers — GQA, RoPE with absolute
@@ -299,9 +298,9 @@ Stated plainly, because a limitation discovered by a reader is a defect in the d
 - **No validated result exists yet.** Every number above is from a randomly-initialised
   0.66M-parameter model on one 4 GiB laptop GPU. The framework is the deliverable so far; the
   findings are not.
-- **Eviction is not supported on Hugging Face models.** `HF_EVICTION_NOT_SUPPORTED` is raised
-  rather than running a full cache and calling it eviction. This is the largest gap between
-  the framework and a real long-context result.
+- **Real-model evaluation is in early stage.** Hugging Face eviction is now supported via
+  `UniqKacheLayer` and `UniqKacheHFCache`, with first real-model results committed. Full
+  evaluation on production-scale models (8B+) remains ongoing.
 - **`AdaptivePolicy` and `AdaptiveController` are unvalidated.** Both report
   `validated: False` in `state_dict()`. Their rule chains are documented, not shown to help.
   A result from them is a hypothesis.

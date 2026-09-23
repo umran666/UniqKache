@@ -47,6 +47,9 @@ class RunSpec:
         Registered policy name. Aliases (``h2o``, ``streamingllm``) are
         accepted and resolved to canonical names, and the canonical name is what
         gets recorded.
+    policy_kwargs:
+        Keyword arguments forwarded to the policy constructor. Defaults to an
+        empty mapping.
     context_length:
         Prompt length in tokens.
     model_revision:
@@ -72,6 +75,7 @@ class RunSpec:
     needle_length: int = 16
     needle_depth: float = 0.5
     policy: str = "full_cache"
+    policy_kwargs: dict[str, Any] = field(default_factory=dict)
     context_length: int = 1024
     batch_size: int = 1
     capacity: int | None = None
@@ -152,6 +156,10 @@ class RunSpec:
                 raise ConfigError(
                     f"unknown policy {self.policy!r}. Available: {', '.join(available_policies())}"
                 )
+            if self.policy_kwargs:
+                from uniqkache.policies import build_policy
+
+                build_policy(self.policy, **self.policy_kwargs)
         except ConfigError:
             raise
         except Exception as exc:
@@ -288,6 +296,8 @@ def percent_sweep(
     non-zero value.
     """
     runs: list[RunSpec] = []
+    full_cache_kwargs = dict(kwargs)
+    full_cache_kwargs.pop("policy_kwargs", None)
     for ratio in ratios:
         if ratio >= 1.0:
             runs.append(
@@ -296,7 +306,7 @@ def percent_sweep(
                     policy="full_cache",
                     context_length=context_length,
                     attention_sinks=0,
-                    **kwargs,
+                    **full_cache_kwargs,
                 )
             )
         else:

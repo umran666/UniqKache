@@ -120,6 +120,7 @@ def main() -> int:
             RunSpec(
                 model="synthetic:tiny",
                 policy=RecencyAttentionPolicy.name,
+                policy_kwargs={"weight": args.weight},
                 context_length=args.context_length,
                 capacity=capacity,
                 attention_sinks=4,

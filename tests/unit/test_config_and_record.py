@@ -102,6 +102,25 @@ class TestRunSpec:
         with pytest.raises(ConfigError, match=match):
             RunSpec(**base)
 
+    def test_policy_kwargs_are_accepted_and_serialized(self):
+        spec = RunSpec(
+            policy="sliding_window",
+            context_length=1024,
+            capacity=128,
+            policy_kwargs={"window": 64},
+        )
+        assert spec.policy_kwargs == {"window": 64}
+        assert spec.to_dict()["policy_kwargs"] == {"window": 64}
+
+    def test_invalid_policy_kwargs_are_rejected(self):
+        with pytest.raises(ConfigError, match="could not construct policy"):
+            RunSpec(
+                policy="sliding_window",
+                context_length=1024,
+                capacity=128,
+                policy_kwargs={"nonexistent_window": 64},
+            )
+
 
 # ---------------------------------------------------------------------------
 # Experiment configuration
@@ -119,6 +138,18 @@ class TestExperimentConfig:
     def test_sweep_uses_full_cache_at_full_retention(self):
         config = percent_sweep(model="synthetic:tiny", policy="sliding_window", context_length=512)
         assert config.runs[0].policy == "full_cache"
+
+    def test_percent_sweep_preserves_policy_kwargs_for_bounded_runs_only(self):
+        config = percent_sweep(
+            model="synthetic:tiny",
+            policy="sliding_window",
+            context_length=512,
+            policy_kwargs={"window": 64},
+        )
+        assert config.runs[0].policy == "full_cache"
+        assert config.runs[0].policy_kwargs == {}
+        assert config.runs[1].policy == "sliding_window"
+        assert config.runs[1].policy_kwargs == {"window": 64}
 
     def test_empty_experiment_is_rejected(self):
         with pytest.raises(ConfigError, match="contains no runs"):

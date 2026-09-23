@@ -137,7 +137,9 @@ class LayerStorage:
 
     @property
     def _keys(self) -> torch.Tensor | None:
-        return self.keys
+        if self._keys_buf is not None:
+            return self._keys_buf[:, :, : self.num_tokens, :]
+        return None
 
     @_keys.setter
     def _keys(self, val: torch.Tensor | None) -> None:
@@ -145,7 +147,9 @@ class LayerStorage:
 
     @property
     def _values(self) -> torch.Tensor | None:
-        return self.values
+        if self._values_buf is not None:
+            return self._values_buf[:, :, : self.num_tokens, :]
+        return None
 
     @_values.setter
     def _values(self, val: torch.Tensor | None) -> None:
@@ -305,7 +309,11 @@ class LayerStorage:
         needed = cur_len + num_new
 
         if self._keys_buf is None:
-            init_cap = self.capacity if self.capacity is not None else 64
+            init_cap = (
+                self.capacity[self.layer_idx]
+                if isinstance(self.capacity, list)
+                else (self.capacity if self.capacity is not None else 64)
+            )
             alloc_cap = max(needed, init_cap)
             self._keys_buf = torch.empty(
                 (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
@@ -723,7 +731,9 @@ class KVStore:
                 device=self.device,
                 num_sinks=config.attention_sinks,
                 batch_size=config.batch_size,
-                capacity=config.capacity,
+                capacity=config.capacity[idx]
+                if isinstance(config.capacity, list)
+                else config.capacity,
             )
             for idx in range(config.num_layers)
         ]

@@ -174,7 +174,7 @@ def _make_cache(
     if capacity is None and spec.policy == "full_cache":
         # An unbounded cache needs no decisions, so no policy is required.
         return KVCache(config, policy=None)
-    policy = build_policy(spec.policy)
+    policy = build_policy(spec.policy, **spec.policy_kwargs)
     return KVCache(config, policy=policy)
 
 
@@ -277,6 +277,7 @@ def _warmup(
         warm_spec = RunSpec(
             model=spec.model,
             policy=spec.policy,
+            policy_kwargs=dict(spec.policy_kwargs),
             context_length=spec.context_length,
             batch_size=spec.batch_size,
             capacity=warm_capacity,

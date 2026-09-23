@@ -72,6 +72,62 @@ def _require_transformers() -> Any:
     return transformers
 
 
+def _extract_layer_kv(
+    hf_cache: Any, layer_idx: int
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Extract (keys, values) tensors for ``layer_idx`` from an HF cache structure.
+
+    Supports:
+    - Transformers >= 4.49 / 5.x ``DynamicCache`` with ``layers`` attribute
+      containing per-layer cache objects exposing ``keys`` and ``values``.
+    - Transformers 4.40 - 4.48 ``DynamicCache`` with ``key_cache`` and ``value_cache``
+      lists of layer tensors.
+    - Legacy ``past_key_values`` tuples or lists of ``(key, value)`` pairs.
+    - Any cache structure subscriptable by layer index returning a ``(key, value)`` pair.
+    """
+    if hf_cache is None:
+        return None, None
+
+    # Transformers 5.x / layers-based Cache API
+    if hasattr(hf_cache, "layers"):
+        layers = hf_cache.layers
+        try:
+            if layer_idx < len(layers):
+                layer = layers[layer_idx]
+                keys = getattr(layer, "keys", None)
+                values = getattr(layer, "values", None)
+                if keys is not None and values is not None:
+                    return keys, values
+                if isinstance(layer, (tuple, list)) and len(layer) >= 2:
+                    return layer[0], layer[1]
+        except (TypeError, IndexError, KeyError):
+            pass
+        return None, None
+
+    # Transformers 4.40 - 4.48 DynamicCache (.key_cache, .value_cache)
+    if hasattr(hf_cache, "key_cache") and hasattr(hf_cache, "value_cache"):
+        key_cache = hf_cache.key_cache
+        value_cache = hf_cache.value_cache
+        try:
+            keys = key_cache[layer_idx] if layer_idx < len(key_cache) else None
+            values = value_cache[layer_idx] if layer_idx < len(value_cache) else None
+            return keys, values
+        except (TypeError, IndexError, KeyError):
+            return None, None
+
+    # Legacy past_key_values tuple/list or custom subscriptable Cache
+    try:
+        pair = hf_cache[layer_idx]
+        if isinstance(pair, (tuple, list)) and len(pair) >= 2:
+            return pair[0], pair[1]
+        if hasattr(pair, "keys") and hasattr(pair, "values"):
+            return pair.keys, pair.values
+    except (TypeError, IndexError, KeyError):
+        pass
+
+    return None, None
+
+
 class HFBackend:
     """Adapter exposing a Hugging Face causal LM as a
     :class:`~uniqkache.models.base.LanguageModel`.
@@ -272,8 +328,7 @@ class HFBackend:
         from uniqkache.utils.device import tensor_bytes
 
         for layer_idx in range(self._num_layers):
-            layer = self._hf_cache.layers[layer_idx]
-            keys, values = layer.keys, layer.values
+            keys, values = _extract_layer_kv(self._hf_cache, layer_idx)
             if keys is None or values is None:
                 continue
             new_keys = keys[:, :, start_pos : start_pos + seq, :]
@@ -345,4 +400,4 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
     )
 
 
-__all__ = ["HF_EVICTION_NOT_SUPPORTED", "HFBackend", "build_hf_model"]
+__all__ = ["HF_EVICTION_NOT_SUPPORTED", "HFBackend", "_extract_layer_kv", "build_hf_model"]

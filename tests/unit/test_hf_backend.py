@@ -18,7 +18,7 @@ import torch
 
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
-from uniqkache.models.hf_backend import HF_EVICTION_NOT_SUPPORTED, HFBackend
+from uniqkache.models.hf_backend import HF_EVICTION_NOT_SUPPORTED, HFBackend, _extract_layer_kv
 from uniqkache.policies import SlidingWindowPolicy
 from uniqkache.utils.errors import BackendError
 
@@ -111,10 +111,105 @@ class TestMirrorOverheadCounter:
         assert backend.mirrored_bytes == 2 * per_layer
         assert unbounded.num_tokens(0) == 4
 
+    def test_mirror_with_dynamic_cache_440_style(self, backend):
+        """Transformers 4.40 DynamicCache uses key_cache and value_cache lists."""
+        k = torch.zeros(1, 2, 4, 8)
+        v = torch.ones(1, 2, 4, 8)
+        backend._hf_cache = type(
+            "DynamicCache440", (), {"key_cache": [k, k], "value_cache": [v, v]}
+        )()
+        backend._num_layers = 2
+
+        unbounded = KVCache(backend.cache_config(capacity=None), policy=None)
+        backend._mirror_into_cache(unbounded, start_pos=0, seq=4)
+
+        per_layer = k.numel() * k.element_size() + v.numel() * v.element_size()
+        assert backend.mirrored_bytes == 2 * per_layer
+        assert unbounded.num_tokens(0) == 4
+
+    def test_mirror_with_legacy_tuple_cache(self, backend):
+        """Legacy HF past_key_values uses a tuple of (key, value) pairs."""
+        k = torch.zeros(1, 2, 4, 8)
+        v = torch.ones(1, 2, 4, 8)
+        backend._hf_cache = ((k, v), (k, v))
+        backend._num_layers = 2
+
+        unbounded = KVCache(backend.cache_config(capacity=None), policy=None)
+        backend._mirror_into_cache(unbounded, start_pos=0, seq=4)
+
+        per_layer = k.numel() * k.element_size() + v.numel() * v.element_size()
+        assert backend.mirrored_bytes == 2 * per_layer
+        assert unbounded.num_tokens(0) == 4
+
     def test_reset_does_not_reset_the_lifetime_counter(self, backend):
         backend._mirrored_bytes = 128
         backend.reset()
         assert backend.mirrored_bytes == 128
+
+
+class TestExtractLayerKV:
+    def test_none_cache_returns_none_pair(self):
+        k, v = _extract_layer_kv(None, 0)
+        assert k is None and v is None
+
+    def test_layers_attribute_with_objects(self):
+        k = torch.randn(1, 2, 3, 4)
+        v = torch.randn(1, 2, 3, 4)
+        cache = type(
+            "ModernCache", (), {"layers": [type("Layer", (), {"keys": k, "values": v})()]}
+        )()
+        ret_k, ret_v = _extract_layer_kv(cache, 0)
+        assert ret_k is k and ret_v is v
+        # Out of bounds
+        out_k, out_v = _extract_layer_kv(cache, 1)
+        assert out_k is None and out_v is None
+
+    def test_layers_attribute_with_tuples(self):
+        k = torch.randn(1, 2, 3, 4)
+        v = torch.randn(1, 2, 3, 4)
+        cache = type("ModernCache", (), {"layers": [(k, v)]})()
+        ret_k, ret_v = _extract_layer_kv(cache, 0)
+        assert ret_k is k and ret_v is v
+
+    def test_key_value_cache_lists(self):
+        k = torch.randn(1, 2, 3, 4)
+        v = torch.randn(1, 2, 3, 4)
+        cache = type("Cache440", (), {"key_cache": [k], "value_cache": [v]})()
+        ret_k, ret_v = _extract_layer_kv(cache, 0)
+        assert ret_k is k and ret_v is v
+        # Out of bounds
+        out_k, out_v = _extract_layer_kv(cache, 1)
+        assert out_k is None and out_v is None
+
+    def test_tuple_of_tuples(self):
+        k = torch.randn(1, 2, 3, 4)
+        v = torch.randn(1, 2, 3, 4)
+        cache = ((k, v),)
+        ret_k, ret_v = _extract_layer_kv(cache, 0)
+        assert ret_k is k and ret_v is v
+        # Out of bounds
+        out_k, out_v = _extract_layer_kv(cache, 1)
+        assert out_k is None and out_v is None
+
+    def test_subscriptable_cache_object(self):
+        k = torch.randn(1, 2, 3, 4)
+        v = torch.randn(1, 2, 3, 4)
+
+        class CustomSubscriptable:
+            def __getitem__(self, idx):
+                if idx == 0:
+                    return (k, v)
+                raise IndexError(idx)
+
+        ret_k, ret_v = _extract_layer_kv(CustomSubscriptable(), 0)
+        assert ret_k is k and ret_v is v
+        out_k, out_v = _extract_layer_kv(CustomSubscriptable(), 1)
+        assert out_k is None and out_v is None
+
+    def test_corrupt_layer_returns_none(self):
+        cache = type("BadCache", (), {"layers": ["not_a_layer"]})()
+        ret_k, ret_v = _extract_layer_kv(cache, 0)
+        assert ret_k is None and ret_v is None
 
 
 class TestEvictionRefusal:

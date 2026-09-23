@@ -634,46 +634,83 @@ def write_results(
     Both formats are written because they serve different readers: JSONL keeps
     full nested fidelity for analysis, CSV is what a spreadsheet or a plot
     script consumes.
+
+    Allocates a unique output basename and avoids overwriting earlier experiments
+    with the same name in the same second, including concurrent writers.
     """
     from uniqkache.metrics.report import records_to_csv
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    base = f"{name}-{stamp}"
 
     records = [outcome.record for outcome in outcomes]
 
-    # Every artifact is written with "\n" endings explicitly, on every platform.
-    # `.gitattributes` normalises these files to LF, so a Windows run would
-    # otherwise produce a file that differs from the index in line endings and
-    # make git warn on each add -- recurring warning noise on a data artifact,
-    # which is the kind of thing that trains people to ignore warnings. The CSV
-    # writer needs `lineterminator` because it emits "\r\n" by default.
-    jsonl_path = output_dir / f"{base}.jsonl"
-    with jsonl_path.open("w", encoding="utf-8", newline="\n") as handle:
-        for record in records:
-            handle.write(json.dumps(record.to_dict(), default=str) + "\n")
+    counter = 0
+    while True:
+        if counter > 10_000:
+            raise RuntimeError(f"could not allocate unique output basename in {output_dir}")
+        suffix = f"-{counter}" if counter > 0 else ""
+        base = f"{name}-{stamp}{suffix}"
 
-    csv_path = records_to_csv(records, output_dir / f"{base}.csv")
+        jsonl_path = output_dir / f"{base}.jsonl"
+        csv_path = output_dir / f"{base}.csv"
+        config_path = output_dir / f"{base}.config.json"
 
-    config_path = output_dir / f"{base}.config.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "name": name,
-                "runs": [record.to_dict() for record in records],
-                "problems": {o.record.run_id: o.problems for o in outcomes if o.problems},
-            },
-            indent=2,
-            default=str,
-        )
-        # json.dumps does not end with a newline, and a text file without one
-        # shows up as "\ No newline at end of file" in every diff.
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+        # Check if any artifact for this candidate basename already exists on disk
+        if jsonl_path.exists() or csv_path.exists() or config_path.exists():
+            counter += 1
+            continue
+
+        # Atomically reserve the basename by exclusively creating `{base}.jsonl`.
+        # Every artifact is written with "\n" endings explicitly, on every platform.
+        # `.gitattributes` normalises these files to LF, so a Windows run would
+        # otherwise produce a file that differs from the index in line endings and
+        # make git warn on each add -- recurring warning noise on a data artifact,
+        # which is the kind of thing that trains people to ignore warnings. The CSV
+        # writer needs `lineterminator` because it emits "\r\n" by default.
+        try:
+            handle = jsonl_path.open("x", encoding="utf-8", newline="\n")
+        except FileExistsError:
+            counter += 1
+            continue
+
+        try:
+            with handle:
+                for record in records:
+                    handle.write(json.dumps(record.to_dict(), default=str) + "\n")
+
+            records_to_csv(records, csv_path, mode="x")
+
+            with config_path.open("x", encoding="utf-8", newline="\n") as cfg_handle:
+                cfg_handle.write(
+                    json.dumps(
+                        {
+                            "name": name,
+                            "runs": [record.to_dict() for record in records],
+                            "problems": {
+                                o.record.run_id: o.problems for o in outcomes if o.problems
+                            },
+                        },
+                        indent=2,
+                        default=str,
+                    )
+                    # json.dumps does not end with a newline, and a text file without one
+                    # shows up as "\ No newline at end of file" in every diff.
+                    + "\n"
+                )
+            break
+        except FileExistsError:
+            jsonl_path.unlink(missing_ok=True)
+            csv_path.unlink(missing_ok=True)
+            config_path.unlink(missing_ok=True)
+            counter += 1
+            continue
+        except BaseException:
+            jsonl_path.unlink(missing_ok=True)
+            csv_path.unlink(missing_ok=True)
+            config_path.unlink(missing_ok=True)
+            raise
 
     return {"jsonl": jsonl_path, "csv": csv_path, "config": config_path}
 

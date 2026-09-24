@@ -1,44 +1,25 @@
 """Hugging Face backend.
 
-STATUS: **Experimental.** Full-cache inference only.
+STATUS: **Experimental.** Supports full-cache and bounded evicting cache policies.
 
 What works
 ----------
 Any ``AutoModelForCausalLM`` can be run through UniqKache's runtime and measured
 with UniqKache's harness: TTFT, TPOT, throughput, peak device memory and
 perplexity, all recorded in the standard
-:class:`~uniqkache.metrics.record.BenchmarkRecord` schema. This is useful in its
-own right — it means a real model's numbers are produced by the same
-instrumentation as everything else, rather than by an ad-hoc script.
+:class:`~uniqkache.metrics.record.BenchmarkRecord` schema.
 
-What does not work yet
-----------------------
-**Evicting policies on HF models are not supported.** Passing a cache with a
-bounded capacity raises :class:`~uniqkache.utils.errors.BackendError`.
-
-The technical reason, recorded so a future contributor does not have to
-rediscover it: in ``transformers`` 5.x the ``Cache`` base class no longer
-accepts a bespoke ``update`` implementation directly — it requires a *layer
-class* via ``layer_class_to_replicate`` and dispatches through an internal
-per-layer abstraction. Intercepting the append path therefore means
-implementing that layer contract, not merely subclassing ``Cache``. This was
-probed and confirmed; see ``docs/architecture.md``.
-
-Until that is done, evicting-policy experiments must use the synthetic backend,
-whose attention path UniqKache owns end to end. This is recorded in the README
-under **Not yet supported**, and on the research roadmap.
-
-Known inefficiency
-------------------
-For the full-cache path this adapter keeps the model's own ``DynamicCache`` and
-additionally mirrors K/V into the UniqKache cache so that occupancy and metadata
-are reported. That duplicates the K/V tensors, so memory figures from an HF run
-overstate the cache's own footprint. Records produced through this path are
-annotated, and the duplication is listed as a known limitation.
+Both full-cache and evicting policies (such as ``sliding_window``,
+``attention_based`` / H2O, ``lru``, etc.) are supported end-to-end. In
+``transformers`` 5.x, custom cache layers subclassing ``CacheLayerMixin``
+(:class:`UniqKacheLayer`) and :class:`UniqKacheHFCache` route append and eviction
+operations directly through :class:`~uniqkache.cache.kv_cache.KVCache`, eliminating
+duplicate memory overhead.
 """
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import torch
@@ -51,14 +32,6 @@ from uniqkache.utils.logging import get_logger
 
 _log = get_logger(__name__)
 
-HF_EVICTION_NOT_SUPPORTED = (
-    "the Hugging Face backend does not support evicting cache policies yet. "
-    "transformers 5.x requires a custom Cache *layer* implementation to intercept "
-    "the append path, which is not implemented. Use the synthetic backend for "
-    "policy experiments, or run this model with policy='full_cache'. "
-    "Tracked in docs/research.md under Open Questions."
-)
-
 
 def _require_transformers() -> Any:
     """Import transformers, or explain how to install it."""
@@ -70,6 +43,142 @@ def _require_transformers() -> Any:
             '    pip install -e ".[hf]"'
         ) from exc
     return transformers
+
+
+try:
+    import transformers.cache_utils as _hf_cache_utils
+
+    _CacheBase = getattr(_hf_cache_utils, "Cache", object)
+    _DynamicLayerBase = getattr(
+        _hf_cache_utils, "DynamicLayer", getattr(_hf_cache_utils, "CacheLayerMixin", object)
+    )
+except ImportError:
+    _CacheBase = object  # type: ignore[assignment,misc]
+    _DynamicLayerBase = object  # type: ignore[assignment,misc]
+
+
+class UniqKacheLayer(_DynamicLayerBase):
+    """Hugging Face Cache layer delegating storage and eviction to UniqKache's KVCache."""
+
+    def __init__(self, kv_cache: KVCache, layer_idx: int) -> None:
+        self.kv_cache = kv_cache
+        self.layer_idx = layer_idx
+
+    @property
+    def keys(self) -> torch.Tensor | None:
+        store = self.kv_cache.store.layer(self.layer_idx)
+        return store.keys if store.is_initialized else None
+
+    @keys.setter
+    def keys(self, value: torch.Tensor | None) -> None:
+        store = self.kv_cache.store.layer(self.layer_idx)
+        store._keys = value
+
+    @property
+    def values(self) -> torch.Tensor | None:
+        store = self.kv_cache.store.layer(self.layer_idx)
+        return store.values if store.is_initialized else None
+
+    @values.setter
+    def values(self, value: torch.Tensor | None) -> None:
+        store = self.kv_cache.store.layer(self.layer_idx)
+        store._values = value
+
+    @property
+    def is_initialized(self) -> bool:
+        return self.kv_cache.store.layer(self.layer_idx).is_initialized
+
+    def get_seq_length(self) -> int:
+        return self.kv_cache.num_tokens(self.layer_idx)
+
+    def get_max_length(self) -> int | None:
+        return self.kv_cache.capacity
+
+    def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
+        cur_len = self.get_seq_length()
+        cap = self.get_max_length()
+        kv_len = (
+            min(cur_len + query_length, cap)
+            if cap is not None and cap > 0
+            else cur_len + query_length
+        )
+        return kv_len, 0
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.kv_cache.append(self.layer_idx, key_states, value_states)
+        k, v = self.kv_cache.get(self.layer_idx)
+        return k, v
+
+    def reset(self) -> None:
+        self.kv_cache.store.layer(self.layer_idx).clear()
+
+    def crop(self, tokens_to_remove: int) -> None:
+        if tokens_to_remove == 0:
+            return
+        cur_len = self.get_seq_length()
+        if tokens_to_remove > 0:
+            if tokens_to_remove >= cur_len:
+                return
+            remove = cur_len - tokens_to_remove
+        else:
+            remove = abs(tokens_to_remove)
+        if remove >= cur_len:
+            self.reset()
+            return
+        keep = cur_len - remove
+        evict_indices = torch.arange(
+            keep, cur_len, device=self.kv_cache.store.layer(self.layer_idx).resident_device
+        )
+        self.kv_cache.evict(self.layer_idx, indices=evict_indices)
+
+
+class UniqKacheHFCache(_CacheBase):
+    """Hugging Face Cache subclass backed directly by a UniqKache KVCache."""
+
+    def __init__(self, kv_cache: KVCache) -> None:
+        self.kv_cache = kv_cache
+        layers = [UniqKacheLayer(kv_cache, idx) for idx in range(kv_cache.num_layers)]
+        if _CacheBase is not object:
+            super().__init__(layers=layers)
+        else:
+            self.layers = layers
+
+    def __getitem__(self, layer_idx: int) -> UniqKacheLayer:
+        return self.layers[layer_idx]
+
+    def __len__(self) -> int:
+        return len(self.layers)
+
+    def get_seq_length(self, layer_idx: int | None = 0) -> int:
+        idx = layer_idx if layer_idx is not None else 0
+        if 0 <= idx < len(self.layers):
+            return self.layers[idx].get_seq_length()
+        return 0
+
+    def get_max_length(self) -> int | None:
+        return self.kv_cache.capacity
+
+    def get_mask_sizes(self, query_length: int, layer_idx: int = 0) -> tuple[int, int]:
+        if 0 <= layer_idx < len(self.layers):
+            return self.layers[layer_idx].get_mask_sizes(query_length)
+        cur_len = self.get_seq_length(layer_idx)
+        cap = self.get_max_length()
+        kv_len = (
+            min(cur_len + query_length, cap)
+            if cap is not None and cap > 0
+            else cur_len + query_length
+        )
+        return kv_len, 0
+
+    def reset(self) -> None:
+        for layer in self.layers:
+            layer.reset()
 
 
 class HFBackend:
@@ -113,6 +222,16 @@ class HFBackend:
         self._vocab_size = int(getattr(config, "vocab_size", 0))
         self._device = next(model.parameters()).device
         self._dtype = next(model.parameters()).dtype
+        try:
+            sig = inspect.signature(self.model.forward)
+            has_var_kwargs = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            self._accepts_position_ids = "position_ids" in sig.parameters or has_var_kwargs
+            self._accepts_cache_position = "cache_position" in sig.parameters or has_var_kwargs
+        except Exception:
+            self._accepts_position_ids = True
+            self._accepts_cache_position = True
 
     # ------------------------------------------------------------------
 
@@ -224,41 +343,43 @@ class HFBackend:
         start_pos: int = 0,
         return_attention: bool = False,
     ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
-        """Run the model, optionally mirroring K/V into a UniqKache cache.
-
-        Raises
-        ------
-        BackendError
-            If ``cache`` has a bounded capacity, because evicting policies are
-            not supported on this backend yet.
-        """
-        if cache is not None and cache.capacity is not None:
-            raise BackendError(HF_EVICTION_NOT_SUPPORTED)
-
-        if not hasattr(self, "_hf_cache"):
-            transformers = _require_transformers()
-            self._hf_cache = transformers.DynamicCache()
-
+        """Run the model, routing cache operations through UniqKache's KVCache."""
         seq = int(input_ids.shape[1])
         cache_position = torch.arange(start_pos, start_pos + seq, device=input_ids.device)
 
-        with torch.no_grad():
-            output = self.model(
-                input_ids=input_ids,
-                past_key_values=self._hf_cache,
-                use_cache=True,
-                output_attentions=return_attention,
-                cache_position=cache_position,
-            )
-
-        self._hf_cache = output.past_key_values
-
         if cache is not None:
-            self._mirror_into_cache(cache, start_pos, seq)
+            hf_cache = getattr(cache, "_hf_cache_adapter", None)
+            if hf_cache is None or getattr(hf_cache, "kv_cache", None) is not cache:
+                hf_cache = UniqKacheHFCache(cache)
+                cache._hf_cache_adapter = hf_cache
+            past_key_values = hf_cache
+        else:
+            if not hasattr(self, "_hf_cache") or self._hf_cache is None:
+                transformers = _require_transformers()
+                self._hf_cache = transformers.DynamicCache()
+            past_key_values = self._hf_cache
 
+        kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "past_key_values": past_key_values,
+            "use_cache": True,
+            "output_attentions": return_attention,
+        }
+        if self._accepts_cache_position:
+            kwargs["cache_position"] = cache_position
+        if self._accepts_position_ids:
+            kwargs["position_ids"] = cache_position.unsqueeze(0)
+
+        with torch.no_grad():
+            output = self.model(**kwargs)
+
+        if cache is None:
+            self._hf_cache = getattr(output, "past_key_values", past_key_values)
+
+        logits = output.logits if hasattr(output, "logits") else output[0]
         attentions = getattr(output, "attentions", None)
         weights = list(attentions) if attentions is not None else None
-        return output.logits, weights
+        return logits, weights
 
     def _mirror_into_cache(self, cache: KVCache, start_pos: int, seq: int) -> None:
         """Copy newly produced K/V into the UniqKache cache for bookkeeping.
@@ -345,4 +466,4 @@ def build_hf_model(spec: Any, *, dtype: torch.dtype, device: str) -> Any:
     )
 
 
-__all__ = ["HF_EVICTION_NOT_SUPPORTED", "HFBackend", "build_hf_model"]
+__all__ = ["HFBackend", "UniqKacheHFCache", "UniqKacheLayer", "build_hf_model"]

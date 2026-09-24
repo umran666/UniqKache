@@ -1,14 +1,7 @@
-"""Tests for the Hugging Face backend's pure-logic paths.
+"""Tests for the Hugging Face backend's pure-logic paths and eviction support.
 
-The HF backend is an optional-extra module that CI never imports with the real
-``transformers`` installed. These tests therefore exercise it with a **stub
-model** — a tiny ``torch.nn`` module that mimics the attributes the adapter
-reads (``config``, ``eval()``, ``parameters()``) — so the suite still passes
-with ``transformers`` absent, no download, and no network.
-
-The behaviour that matters most here is the bounded-cache refusal: an
-unsupported configuration must raise carrying ``HF_EVICTION_NOT_SUPPORTED``
-rather than silently running a full cache and reporting it as eviction.
+The HF backend supports both full-cache and bounded evicting cache policies
+via UniqKacheHFCache and UniqKacheLayer.
 """
 
 from __future__ import annotations
@@ -18,9 +11,31 @@ import torch
 
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
-from uniqkache.models.hf_backend import HF_EVICTION_NOT_SUPPORTED, HFBackend
+from uniqkache.models.hf_backend import HFBackend, UniqKacheHFCache, UniqKacheLayer
 from uniqkache.policies import SlidingWindowPolicy
+from uniqkache.utils.device import cuda_is_available
 from uniqkache.utils.errors import BackendError
+
+requires_cuda = pytest.mark.skipif(not cuda_is_available(), reason="requires a CUDA device")
+
+try:
+    import transformers
+    from transformers import AutoModelForCausalLM
+
+    _has_tiny_llama = True
+    try:
+        AutoModelForCausalLM.from_pretrained(
+            "hf-internal-testing/tiny-random-LlamaForCausalLM", local_files_only=True
+        )
+    except Exception:
+        _has_tiny_llama = False
+except ImportError:
+    transformers = None  # type: ignore[assignment]
+    _has_tiny_llama = False
+
+requires_tiny_llama = pytest.mark.skipif(
+    not _has_tiny_llama, reason="requires hf-internal-testing/tiny-random-LlamaForCausalLM cached"
+)
 
 
 class _StubConfig:
@@ -117,27 +132,150 @@ class TestMirrorOverheadCounter:
         assert backend.mirrored_bytes == 128
 
 
-class TestEvictionRefusal:
-    def test_a_bounded_cache_raises_the_documented_error(self, backend):
+class TestUniqKacheLayer:
+    def test_layer_properties_and_delegation(self):
+        config = CacheConfig(
+            num_layers=2, num_kv_heads=2, head_dim=8, capacity=8, attention_sinks=2
+        )
+        kv_cache = KVCache(config, policy=SlidingWindowPolicy())
+        layer = UniqKacheLayer(kv_cache, layer_idx=0)
+
+        assert layer.is_initialized is False
+        assert layer.keys is None
+        assert layer.values is None
+        assert layer.get_seq_length() == 0
+        assert layer.get_max_length() == 8
+
+        # Test mask sizes
+        assert layer.get_mask_sizes(query_length=4) == (4, 0)
+        assert layer.get_mask_sizes(query_length=12) == (8, 0)
+
+        # Test update
+        k = torch.randn(1, 2, 4, 8)
+        v = torch.randn(1, 2, 4, 8)
+        ret_k, ret_v = layer.update(k, v)
+        assert layer.is_initialized is True
+        assert layer.get_seq_length() == 4
+        assert ret_k.shape == (1, 2, 4, 8)
+        assert ret_v.shape == (1, 2, 4, 8)
+
+        # Append more to trigger eviction
+        k2 = torch.randn(1, 2, 8, 8)
+        v2 = torch.randn(1, 2, 8, 8)
+        ret_k2, ret_v2 = layer.update(k2, v2)
+        assert layer.get_seq_length() == 8
+        assert ret_k2.shape == (1, 2, 8, 8)
+        assert ret_v2.shape == (1, 2, 8, 8)
+
+        # Test crop
+        layer.crop(-2)
+        assert layer.get_seq_length() == 6
+
+        # Test reset
+        layer.reset()
+        assert layer.get_seq_length() == 0
+        assert layer.keys is None
+
+
+class TestUniqKacheHFCache:
+    def test_cache_wrapping_and_layer_access(self):
+        config = CacheConfig(num_layers=3, num_kv_heads=2, head_dim=8, capacity=10)
+        kv_cache = KVCache(config, policy=SlidingWindowPolicy())
+        hf_cache = UniqKacheHFCache(kv_cache)
+
+        assert len(hf_cache) == 3
+        assert isinstance(hf_cache[0], UniqKacheLayer)
+        assert hf_cache.get_max_length() == 10
+        assert hf_cache.get_seq_length(0) == 0
+        assert hf_cache.get_mask_sizes(5, 0) == (5, 0)
+
+        # Populate a layer
+        k = torch.randn(1, 2, 4, 8)
+        v = torch.randn(1, 2, 4, 8)
+        hf_cache[0].update(k, v)
+        assert hf_cache.get_seq_length(0) == 4
+        assert hf_cache.get_seq_length(1) == 0
+
+        # Reset
+        hf_cache.reset()
+        assert hf_cache.get_seq_length(0) == 0
+
+
+class TestForwardWiring:
+    def test_forward_wires_uniqkache_cache_to_hf_model(self):
+        class _CallableStub(_StubModel):
+            def __init__(self) -> None:
+                super().__init__()
+                self.recorded_cache = None
+
+            def forward(self, input_ids, past_key_values=None, **kwargs):
+                self.recorded_cache = past_key_values
+                return type(
+                    "Output",
+                    (),
+                    {
+                        "logits": torch.zeros(1, input_ids.shape[1], 128),
+                        "past_key_values": past_key_values,
+                    },
+                )()
+
+        stub = _CallableStub()
+        backend = HFBackend(stub, identifier="stub/test")
+        cache = KVCache(backend.cache_config(capacity=8), policy=SlidingWindowPolicy())
+        backend.forward(torch.randint(0, 128, (1, 4)), cache=cache)
+
+        assert isinstance(stub.recorded_cache, UniqKacheHFCache)
+        assert stub.recorded_cache.kv_cache is cache
+
+
+class TestEvictionExecution:
+    @requires_tiny_llama
+    def test_bounded_hf_run_end_to_end_cpu(self):
+        from uniqkache.runtime.generation import GenerationConfig, GenerationEngine
+
+        backend = HFBackend.from_pretrained(
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            device="cpu",
+            local_files_only=True,
+        )
+        capacity = 8
         cache = KVCache(
-            backend.cache_config(capacity=4, attention_sinks=1),
+            backend.cache_config(capacity=capacity, attention_sinks=2, device="cpu"),
             policy=SlidingWindowPolicy(),
         )
-        with pytest.raises(BackendError) as excinfo:
-            backend.forward(torch.randint(0, 128, (1, 8)), cache=cache, start_pos=0)
-        assert HF_EVICTION_NOT_SUPPORTED in str(excinfo.value)
+        engine = GenerationEngine(backend, cache, GenerationConfig(max_new_tokens=6))
+        prompt = torch.randint(0, backend.vocab_size, (1, 16))
+        result = engine.generate(prompt)
 
-    def test_an_unbounded_cache_does_not_raise_for_the_wrong_reason(self, backend):
-        """The unbounded path must get *past* the capacity guard.
+        assert result.generated_tokens == 6
+        assert result.cache_stats["max_tokens_in_layer"] <= capacity
+        for layer_idx in range(backend.num_layers):
+            assert cache.num_tokens(layer_idx) <= capacity
 
-        The stub model cannot actually run a forward pass, so we only assert the
-        failure is NOT the eviction refusal — any later failure is the stub's
-        limits, not the guard's.
-        """
-        cache = KVCache(backend.cache_config(capacity=None), policy=None)
-        with pytest.raises(Exception) as excinfo:
-            backend.forward(torch.randint(0, 128, (1, 4)), cache=cache, start_pos=0)
-        assert HF_EVICTION_NOT_SUPPORTED not in str(excinfo.value)
+    @pytest.mark.gpu
+    @requires_cuda
+    @requires_tiny_llama
+    def test_bounded_hf_run_on_gpu(self):
+        from uniqkache.runtime.generation import GenerationConfig, GenerationEngine
+
+        backend = HFBackend.from_pretrained(
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            device="cuda",
+            local_files_only=True,
+        )
+        capacity = 8
+        cache = KVCache(
+            backend.cache_config(capacity=capacity, attention_sinks=2, device="cuda"),
+            policy=SlidingWindowPolicy(),
+        )
+        engine = GenerationEngine(backend, cache, GenerationConfig(max_new_tokens=5))
+        prompt = torch.randint(0, backend.vocab_size, (1, 16), device="cuda")
+        result = engine.generate(prompt)
+
+        assert result.generated_tokens == 5
+        assert result.cache_stats["max_tokens_in_layer"] <= capacity
+        for layer_idx in range(backend.num_layers):
+            assert cache.num_tokens(layer_idx) <= capacity
 
 
 class TestOfflineResolution:

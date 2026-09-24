@@ -621,10 +621,12 @@ quality value. All are unchanged.
 
 ## Open Questions
 
-1. **Does any of this survive a real model?** Every result above is from a
-   randomly-initialised 0.66M-parameter model. The immediate next step is a dense-attention
-   Hugging Face model — the blocker is that evicting policies are unsupported on the HF
-   backend, which is the highest-priority gap in the framework.
+1. **Does any of this survive a real model?** The blocker of evicting policies being
+   unsupported on the HF backend is resolved via `UniqKacheLayer` and `UniqKacheHFCache`.
+   Initial end-to-end results on a real dense-attention architecture
+   (`hf-internal-testing/tiny-random-LlamaForCausalLM`) are committed under
+   `experiments/results/hf-real-model-eviction*`. The question is now narrowed to evaluating
+   retention sweeps and policy differences on production-scale models (e.g. SmolLM, Llama-3-8B).
 2. **Does attention mass identify what to keep?** H6 is untested. If `attention_based` does not
    beat `lru` at equal budget on a real model, a large part of the eviction literature does not
    transfer to this harness, and that is itself a finding worth publishing.

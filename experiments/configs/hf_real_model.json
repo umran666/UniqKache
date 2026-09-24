@@ -1,0 +1,30 @@
+{
+  "name": "hf-real-model-eviction",
+  "description": "Validation of the Hugging Face eviction path on a real dense-attention model (hf-internal-testing/tiny-random-LlamaForCausalLM). Compares an unbounded full_cache baseline against a bounded sliding_window policy with capacity=16 and attention_sinks=2, verifying end-to-end execution, attention masking, and cache bounded occupancy.",
+  "runs": [
+    {
+      "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+      "policy": "full_cache",
+      "context_length": 32,
+      "max_new_tokens": 8,
+      "task": "summarize",
+      "seed": 42,
+      "offline": true,
+      "measure_quality": true,
+      "notes": "full_cache reference on real HF Llama architecture"
+    },
+    {
+      "model": "hf-internal-testing/tiny-random-LlamaForCausalLM",
+      "policy": "sliding_window",
+      "context_length": 32,
+      "capacity": 16,
+      "attention_sinks": 2,
+      "max_new_tokens": 8,
+      "task": "summarize",
+      "seed": 42,
+      "offline": true,
+      "measure_quality": true,
+      "notes": "bounded sliding_window eviction (capacity=16) on real HF Llama architecture"
+    }
+  ]
+}

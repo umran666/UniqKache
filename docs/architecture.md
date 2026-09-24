@@ -99,8 +99,9 @@ are pinned by a test.
    any record with latency or memory metrics and no quality metric. The runner prints those
    problems; it does not swallow them.
 
-8. **Unsupported is refused, not approximated.** The HF backend raises
-   `HF_EVICTION_NOT_SUPPORTED` rather than running a full cache and reporting it as eviction.
+8. **Unsupported is refused, not approximated.** When an operation or architecture is not
+   supported, an explicit error is raised rather than silently approximating it (e.g. running
+   a full cache and reporting it as eviction).
 
 9. **No fabricated constants.** `Tier.bandwidth_gbps` defaults to `None`. A guessed PCIe
    bandwidth would make every offload claim unverifiable.
@@ -325,17 +326,23 @@ alternative cannot be audited.
 
 ## Hugging Face backend
 
-The HF backend is **Experimental**, and evicting policies on it are **Not yet supported**.
+The HF backend is **Experimental**, supporting both full-cache and bounded evicting cache policies.
 
-Why: `transformers` 5.x requires a `Cache` *layer* implementation
-(`layer_class_to_replicate`), and subclassing `update` for bespoke behaviour is no longer
-supported. UniqKache's eviction model — evict from a populated store and read back — does not
-map onto that interface without a real `CacheLayer` implementation.
+In `transformers` 5.x, the `Cache` base class delegates per-layer caching to dedicated layer
+instances subclassing `CacheLayerMixin` / `DynamicLayer`. Subclassing `Cache.update` directly
+is no longer supported.
 
-Rather than half-working, `build_hf_model` raises `HF_EVICTION_NOT_SUPPORTED`. Running a full
-cache under `--policy sliding_window` and reporting the result would be exactly the kind of
-silent misreporting this project is built to prevent. Closing this gap is the highest-priority
-item on the roadmap, because it is what stands between the framework and a real-model result.
+UniqKache implements this layer contract with `UniqKacheLayer` and `UniqKacheHFCache`.
+Instead of maintaining a separate `DynamicCache` and copying tensors (which duplicated memory),
+`UniqKacheLayer` routes `update()` directly through `KVCache.append()`, returning the surviving
+keys and values after eviction. Key and value properties delegate directly to `kv_cache.store.layer(layer_idx)`.
+
+To support models with RoPE and attention masks under eviction:
+- `UniqKacheLayer.get_mask_sizes(query_length)` returns `min(cur_len + query_length, capacity), 0`
+  to match the attention mask's key-length dimension to post-eviction occupancy.
+- `HFBackend.forward` explicitly supplies `position_ids` derived from the absolute sequence
+  positions (`cache_position`), ensuring Invariant 4 (absolute RoPE angles preserved under eviction)
+  holds across all generation steps.
 
 ---
 

@@ -137,7 +137,12 @@ class LayerStorage:
 
     @property
     def _keys(self) -> torch.Tensor | None:
-        return self.keys
+        # Private accessor = raw resident buffer only. A compressed-only layer
+        # has no resident buffer, so this returns None rather than silently
+        # dequantizing through the public `keys` property.
+        if self._keys_buf is not None:
+            return self._keys_buf[:, :, : self.num_tokens, :]
+        return None
 
     @_keys.setter
     def _keys(self, val: torch.Tensor | None) -> None:
@@ -145,7 +150,9 @@ class LayerStorage:
 
     @property
     def _values(self) -> torch.Tensor | None:
-        return self.values
+        if self._values_buf is not None:
+            return self._values_buf[:, :, : self.num_tokens, :]
+        return None
 
     @_values.setter
     def _values(self, val: torch.Tensor | None) -> None:
@@ -318,6 +325,9 @@ class LayerStorage:
                 device=self.device,
             )
         else:
+            # The two buffers are always both set or both unset (they are only
+            # ever assigned together), so the else branch implies both exist.
+            assert self._values_buf is not None
             if self._keys_buf.device != self.device:
                 self._keys_buf = self._keys_buf.to(self.device)
                 self._values_buf = self._values_buf.to(self.device)
@@ -723,7 +733,11 @@ class KVStore:
                 device=self.device,
                 num_sinks=config.attention_sinks,
                 batch_size=config.batch_size,
-                capacity=config.capacity,
+                # Resolve per layer: LayerStorage.capacity is int | None, while
+                # CacheConfig.capacity may be a per-layer list (fixes the
+                # TypeError on the first append for list capacities, and the
+                # mypy arg-type error).
+                capacity=config.capacity_for_layer(idx),
             )
             for idx in range(config.num_layers)
         ]

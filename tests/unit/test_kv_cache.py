@@ -520,3 +520,38 @@ class TestPreallocatedBuffer:
         # Under O(T^2) cat with T approaching 1000, late_time would be ~4x-5x early_time.
         # With preallocated buffer, late_time remains flat (O(1) per token).
         assert late_time < 3.0 * early_time + 0.05
+
+
+class TestLayerwiseCapacityList:
+    """Pins: a per-layer capacity list must work from construction, not only
+    when applied after prefill via an allocation strategy (#48)."""
+
+    def test_list_capacity_cache_accepts_appends(self, kv_factory):
+        config = CacheConfig(
+            num_layers=NUM_LAYERS,
+            num_kv_heads=NUM_KV_HEADS,
+            head_dim=HEAD_DIM,
+            dtype=torch.float32,
+            capacity=[8, 6, 4],
+            attention_sinks=0,
+        )
+        cache = KVCache(config, policy=SlidingWindowPolicy(window=8))
+        for layer_idx in range(NUM_LAYERS):
+            cache.append(layer_idx, kv_factory(10), kv_factory(10))
+
+        # Each layer must be capped at its own budget, not a shared one.
+        for layer_idx, expected in enumerate([8, 6, 4]):
+            assert cache.num_tokens(layer_idx) == expected
+
+    def test_store_resolves_per_layer_capacity(self):
+        from uniqkache.cache.store import KVStore
+
+        config = CacheConfig(
+            num_layers=NUM_LAYERS,
+            num_kv_heads=NUM_KV_HEADS,
+            head_dim=HEAD_DIM,
+            dtype=torch.float32,
+            capacity=[8, 6, 4],
+        )
+        store = KVStore(config)
+        assert [store.layer(i).capacity for i in range(NUM_LAYERS)] == [8, 6, 4]

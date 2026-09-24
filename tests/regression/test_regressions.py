@@ -893,6 +893,11 @@ class TestTransformers440DynamicCacheCompatibilityRegression:
                 )()
 
         backend = HFBackend(_StubModel(), identifier="stub-llama", weights_are_random=True)
+        # Pre-seed the internal cache slot so forward() does not try to build a
+        # real transformers.DynamicCache; the stub ignores past_key_values and
+        # returns its own cache structure, which is what this test exercises.
+        # CI runs without the hf extra, so _require_transformers must not be hit.
+        backend._hf_cache = None
         cache = KVCache(backend.cache_config(capacity=None), policy=None)
         input_ids = torch.tensor([[1, 2, 3]])
 
@@ -936,6 +941,9 @@ class TestTransformers440DynamicCacheCompatibilityRegression:
                 )()
 
         backend = HFBackend(_StubModel(), identifier="stub-llama", weights_are_random=True)
+        # See the sibling 4.40 test: pre-seed so forward() never calls
+        # _require_transformers() (CI has no hf extra).
+        backend._hf_cache = None
         cache = KVCache(backend.cache_config(capacity=None), policy=None)
         input_ids = torch.tensor([[1, 2, 3]])
 

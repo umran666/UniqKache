@@ -137,6 +137,9 @@ class LayerStorage:
 
     @property
     def _keys(self) -> torch.Tensor | None:
+        # Private accessor = raw resident buffer only. A compressed-only layer
+        # has no resident buffer, so this returns None rather than silently
+        # dequantizing through the public `keys` property.
         if self._keys_buf is not None:
             return self._keys_buf[:, :, : self.num_tokens, :]
         return None
@@ -309,11 +312,7 @@ class LayerStorage:
         needed = cur_len + num_new
 
         if self._keys_buf is None:
-            init_cap = (
-                self.capacity[self.layer_idx]
-                if isinstance(self.capacity, list)
-                else (self.capacity if self.capacity is not None else 64)
-            )
+            init_cap = self.capacity if self.capacity is not None else 64
             alloc_cap = max(needed, init_cap)
             self._keys_buf = torch.empty(
                 (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim),
@@ -326,6 +325,9 @@ class LayerStorage:
                 device=self.device,
             )
         else:
+            # The two buffers are always both set or both unset (they are only
+            # ever assigned together), so the else branch implies both exist.
+            assert self._values_buf is not None
             if self._keys_buf.device != self.device:
                 self._keys_buf = self._keys_buf.to(self.device)
                 self._values_buf = self._values_buf.to(self.device)
@@ -731,9 +733,11 @@ class KVStore:
                 device=self.device,
                 num_sinks=config.attention_sinks,
                 batch_size=config.batch_size,
-                capacity=config.capacity[idx]
-                if isinstance(config.capacity, list)
-                else config.capacity,
+                # Resolve per layer: LayerStorage.capacity is int | None, while
+                # CacheConfig.capacity may be a per-layer list (fixes the
+                # TypeError on the first append for list capacities, and the
+                # mypy arg-type error).
+                capacity=config.capacity_for_layer(idx),
             )
             for idx in range(config.num_layers)
         ]

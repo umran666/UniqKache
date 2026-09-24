@@ -81,6 +81,7 @@ class RunSpec:
     precision: str = "float32"
     device: str = "auto"
     seed: int = 0
+    repetitions: int = 1
     max_new_tokens: int = 8
     task: str = "generation"
     dataset: str | None = None
@@ -92,6 +93,8 @@ class RunSpec:
     notes: str = ""
 
     def __post_init__(self) -> None:
+        if self.repetitions < 1:
+            raise ConfigError(f"repetitions must be >= 1, got {self.repetitions}")
         if self.context_length < 2:
             raise ConfigError(f"context_length must be >= 2, got {self.context_length}")
         budget_fields = [

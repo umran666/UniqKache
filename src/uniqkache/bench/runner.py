@@ -37,7 +37,14 @@ from uniqkache.metrics.quality import (
     perplexity,
     random_token_ids,
 )
-from uniqkache.metrics.record import BenchmarkRecord, git_commit, git_is_dirty, validate_record
+from uniqkache.metrics.record import (
+    SCHEMA_VERSION,
+    BenchmarkRecord,
+    MetricAggregate,
+    git_commit,
+    git_is_dirty,
+    validate_record,
+)
 from uniqkache.models.synthetic import build_model, get_preset
 from uniqkache.policies import build_policy
 from uniqkache.runtime.generation import GenerationConfig, GenerationEngine, GenerationResult
@@ -302,93 +309,22 @@ def _warmup(
     _log.debug("warmup complete on %s", device)
 
 
-def run_spec(
+def _run_single_spec(
     spec: RunSpec,
+    built: _BuiltModel,
     *,
+    capacity: int | None,
+    dtype: torch.dtype,
+    device: str,
     repo_path: str | Path | None = None,
-    reference_memo: dict[tuple[Any, ...], float] | None = None,
+    memo: dict[tuple[Any, ...], float],
 ) -> RunOutcome:
-    """Execute one benchmark run and produce its record.
-
-    Parameters
-    ----------
-    spec:
-        What to run.
-    repo_path:
-        Repository root, used to read the git commit for the record.
-    reference_memo:
-        Shared cache of full-cache reference perplexities, so a sweep computes
-        the reference once rather than once per run.
-
-    Returns
-    -------
-    RunOutcome
-        The record, the raw generation and quality results, and any integrity
-        problems detected.
-    """
-    memo = reference_memo if reference_memo is not None else {}
-    device = str(resolve_device(spec.device))
-    dtype = resolve_dtype(spec.precision)
+    """Execute one single-seed run iteration."""
     set_seed(spec.seed)
-
     run_id = f"{spec.policy}-{spec.model}-{spec.context_length}-{uuid.uuid4().hex[:8]}"
-    _log.info(
-        "run %s: model=%s policy=%s ctx=%d capacity=%s sinks=%d device=%s",
-        run_id,
-        spec.model,
-        spec.policy,
-        spec.context_length,
-        spec.resolved_capacity if spec.memory_budget_mb is None else "<from budget>",
-        spec.attention_sinks,
-        device,
-    )
-
-    built = build_model_for_spec(spec, dtype, device)
-
-    # A byte budget is resolved here, in the runner, because the translation
-    # needs the built model's exact cache shape (layers, heads, head_dim,
-    # dtype, batch). `tokens_for_bytes` floors, so the derived capacity never
-    # exceeds the requested budget. The requested budget is recorded alongside
-    # the derived capacity: `capacity` alone cannot distinguish "I asked for
-    # 4096 tokens" from "I asked for 512 MiB and got 4096 tokens".
-    capacity = spec.resolved_capacity
-    if spec.memory_budget_mb is not None:
-        byte_budget = int(spec.memory_budget_mb * 1024 * 1024)
-        probe_config = built.cache_config_factory(None, spec.attention_sinks, dtype, device)
-        capacity = probe_config.tokens_for_bytes(byte_budget)
-        if capacity < 1:
-            raise ConfigError(
-                f"memory budget {spec.memory_budget_mb} MiB fits 0 tokens at this "
-                f"model's cache shape ({probe_config.bytes_per_token()} bytes/token "
-                "across all layers); the budget is too small to be meaningful"
-            )
-        if spec.attention_sinks > capacity:
-            raise ConfigError(
-                f"attention_sinks {spec.attention_sinks} exceeds the capacity {capacity} "
-                f"derived from the {spec.memory_budget_mb} MiB budget"
-            )
-        if spec.policy == "full_cache":
-            raise ConfigError(
-                "memory_budget_mb sets a token budget, but policy 'full_cache' never "
-                "evicts; the budget would be recorded but never enforced. Use an "
-                "evicting policy."
-            )
-
-    if device == "cpu" and dtype in {torch.float16, torch.bfloat16}:
-        # Half precision on CPU is slow and, for some ops, unsupported. The
-        # result would be a latency number that says more about the CPU backend
-        # than about the cache, so we refuse rather than emit it.
-        raise ConfigError(
-            f"precision {spec.precision!r} on CPU would produce latency figures that "
-            "reflect the CPU half-precision path rather than the cache. Use float32 "
-            "on CPU, or run on a CUDA device."
-        )
 
     prompt = random_token_ids(built.vocab_size, spec.context_length, seed=spec.seed)
     prompt = prompt.to(device)
-
-    # Pay device initialisation costs outside the timed region.
-    _warmup(spec, built, dtype=dtype, device=device)
 
     # ---- generation ------------------------------------------------------
     gen_cache = _make_cache(spec, built, capacity=capacity, dtype=dtype, device=device)
@@ -475,6 +411,7 @@ def run_spec(
 
     record = BenchmarkRecord(
         run_id=run_id,
+        schema_version=SCHEMA_VERSION,
         git_commit=git_commit(str(repo_path) if repo_path else None),
         git_dirty=git_is_dirty(str(repo_path) if repo_path else None),
         model=built.identifier,
@@ -525,6 +462,8 @@ def run_spec(
         quality_metric=quality.metric if quality else None,
         quality_value=quality.value if quality else None,
         quality_reference=reference,
+        repetitions=spec.repetitions,
+        seeds=[spec.seed],
         seed=spec.seed,
         torch_version=hardware.torch_version,
         cuda_version=hardware.cuda_version,
@@ -562,6 +501,279 @@ def run_spec(
         _log.warning("record integrity: %s: %s", run_id, problem)
 
     return RunOutcome(record=record, generation=generation, quality=quality, problems=problems)
+
+
+def run_spec(
+    spec: RunSpec,
+    *,
+    repo_path: str | Path | None = None,
+    reference_memo: dict[tuple[Any, ...], float] | None = None,
+) -> RunOutcome:
+    """Execute one benchmark run (or multi-seed repetitions) and produce its record.
+
+    Parameters
+    ----------
+    spec:
+        What to run.
+    repo_path:
+        Repository root, used to read the git commit for the record.
+    reference_memo:
+        Shared cache of full-cache reference perplexities, so a sweep computes
+        the reference once rather than once per run.
+
+    Returns
+    -------
+    RunOutcome
+        The record, the raw generation and quality results, and any integrity
+        problems detected.
+    """
+    memo = reference_memo if reference_memo is not None else {}
+    device = str(resolve_device(spec.device))
+    dtype = resolve_dtype(spec.precision)
+
+    run_id = f"{spec.policy}-{spec.model}-{spec.context_length}-{uuid.uuid4().hex[:8]}"
+    _log.info(
+        "run %s: model=%s policy=%s ctx=%d capacity=%s sinks=%d device=%s repetitions=%d",
+        run_id,
+        spec.model,
+        spec.policy,
+        spec.context_length,
+        spec.resolved_capacity if spec.memory_budget_mb is None else "<from budget>",
+        spec.attention_sinks,
+        device,
+        spec.repetitions,
+    )
+
+    built = build_model_for_spec(spec, dtype, device)
+
+    # A byte budget is resolved here, in the runner, because the translation
+    # needs the built model's exact cache shape (layers, heads, head_dim,
+    # dtype, batch). `tokens_for_bytes` floors, so the derived capacity never
+    # exceeds the requested budget. The requested budget is recorded alongside
+    # the derived capacity: `capacity` alone cannot distinguish "I asked for
+    # 4096 tokens" from "I asked for 512 MiB and got 4096 tokens".
+    capacity = spec.resolved_capacity
+    if spec.memory_budget_mb is not None:
+        byte_budget = int(spec.memory_budget_mb * 1024 * 1024)
+        probe_config = built.cache_config_factory(None, spec.attention_sinks, dtype, device)
+        capacity = probe_config.tokens_for_bytes(byte_budget)
+        if capacity < 1:
+            raise ConfigError(
+                f"memory budget {spec.memory_budget_mb} MiB fits 0 tokens at this "
+                f"model's cache shape ({probe_config.bytes_per_token()} bytes/token "
+                "across all layers); the budget is too small to be meaningful"
+            )
+        if spec.attention_sinks > capacity:
+            raise ConfigError(
+                f"attention_sinks {spec.attention_sinks} exceeds the capacity {capacity} "
+                f"derived from the {spec.memory_budget_mb} MiB budget"
+            )
+        if spec.policy == "full_cache":
+            raise ConfigError(
+                "memory_budget_mb sets a token budget, but policy 'full_cache' never "
+                "evicts; the budget would be recorded but never enforced. Use an "
+                "evicting policy."
+            )
+
+    if device == "cpu" and dtype in {torch.float16, torch.bfloat16}:
+        # Half precision on CPU is slow and, for some ops, unsupported. The
+        # result would be a latency number that says more about the CPU backend
+        # than about the cache, so we refuse rather than emit it.
+        raise ConfigError(
+            f"precision {spec.precision!r} on CPU would produce latency figures that "
+            "reflect the CPU half-precision path rather than the cache. Use float32 "
+            "on CPU, or run on a CUDA device."
+        )
+
+    # Pay device initialisation costs outside the timed region.
+    _warmup(spec, built, dtype=dtype, device=device)
+
+    if spec.repetitions == 1:
+        return _run_single_spec(
+            spec,
+            built,
+            capacity=capacity,
+            dtype=dtype,
+            device=device,
+            repo_path=repo_path,
+            memo=memo,
+        )
+
+    # Multi-seed run: repetitions > 1
+    rep_outcomes: list[RunOutcome] = []
+    for i in range(spec.repetitions):
+        rep_seed = spec.seed + i
+        rep_spec = spec.with_overrides(seed=rep_seed, repetitions=1)
+        outcome = _run_single_spec(
+            rep_spec,
+            built,
+            capacity=capacity,
+            dtype=dtype,
+            device=device,
+            repo_path=repo_path,
+            memo=memo,
+        )
+        rep_outcomes.append(outcome)
+
+    aggregates: dict[str, MetricAggregate] = {}
+    metric_fields = [
+        "ttft_ms",
+        "tpot_ms",
+        "prefill_ms",
+        "decode_ms",
+        "total_ms",
+        "latency_p50_ms",
+        "latency_p90_ms",
+        "tokens_per_second",
+        "quality_value",
+        "peak_memory_bytes",
+        "cache_bytes_total",
+        "cache_bytes_on_device",
+        "cache_bytes_offloaded",
+        "cache_compression_ratio",
+        "cache_final_tokens",
+    ]
+
+    for field_name in metric_fields:
+        vals: list[float] = []
+        for o in rep_outcomes:
+            v = getattr(o.record, field_name, None)
+            if v is not None:
+                vals.append(float(v))
+        if vals:
+            mean = sum(vals) / len(vals)
+            if len(vals) > 1:
+                variance = sum((x - mean) ** 2 for x in vals) / (len(vals) - 1)
+                std = variance**0.5
+            else:
+                std = 0.0
+            aggregates[field_name] = MetricAggregate(
+                mean=mean,
+                std=std,
+                min=min(vals),
+                max=max(vals),
+                values=vals,
+            )
+
+    q_deltas: list[float] = []
+    for o in rep_outcomes:
+        qd = o.record.quality_delta
+        if qd is not None:
+            q_deltas.append(float(qd))
+    if q_deltas:
+        mean = sum(q_deltas) / len(q_deltas)
+        std = (
+            (sum((x - mean) ** 2 for x in q_deltas) / (len(q_deltas) - 1)) ** 0.5
+            if len(q_deltas) > 1
+            else 0.0
+        )
+        aggregates["quality_delta"] = MetricAggregate(
+            mean=mean,
+            std=std,
+            min=min(q_deltas),
+            max=max(q_deltas),
+            values=q_deltas,
+        )
+
+    all_problems: list[str] = []
+    for o in rep_outcomes:
+        for p in o.problems:
+            if p not in all_problems:
+                all_problems.append(p)
+
+    base_record = rep_outcomes[0].record
+    agg_run_id = f"{spec.policy}-{spec.model}-{spec.context_length}-rep{spec.repetitions}-{uuid.uuid4().hex[:8]}"
+
+    aggregated_record = BenchmarkRecord(
+        run_id=agg_run_id,
+        schema_version=SCHEMA_VERSION,
+        timestamp=base_record.timestamp,
+        git_commit=base_record.git_commit,
+        git_dirty=base_record.git_dirty,
+        model=base_record.model,
+        model_revision=base_record.model_revision,
+        model_num_parameters=base_record.model_num_parameters,
+        model_config=base_record.model_config,
+        weights_are_random=base_record.weights_are_random,
+        tokenizer=base_record.tokenizer,
+        model_loaded_offline=base_record.model_loaded_offline,
+        mirror_overhead_bytes=base_record.mirror_overhead_bytes,
+        task=base_record.task,
+        dataset=base_record.dataset,
+        context_length=base_record.context_length,
+        generated_tokens=base_record.generated_tokens,
+        batch_size=base_record.batch_size,
+        precision=base_record.precision,
+        policy=base_record.policy,
+        policy_config=base_record.policy_config,
+        capacity=base_record.capacity,
+        attention_sinks=base_record.attention_sinks,
+        memory_budget_mb=base_record.memory_budget_mb,
+        compressor=base_record.compressor,
+        device=base_record.device,
+        gpu_name=base_record.gpu_name,
+        gpu_total_memory_bytes=base_record.gpu_total_memory_bytes,
+        gpu_compute_capability=base_record.gpu_compute_capability,
+        peak_memory_bytes=int(aggregates["peak_memory_bytes"].mean)
+        if "peak_memory_bytes" in aggregates
+        else None,
+        cache_bytes_total=int(aggregates["cache_bytes_total"].mean)
+        if "cache_bytes_total" in aggregates
+        else None,
+        cache_bytes_on_device=int(aggregates["cache_bytes_on_device"].mean)
+        if "cache_bytes_on_device" in aggregates
+        else None,
+        cache_bytes_offloaded=int(aggregates["cache_bytes_offloaded"].mean)
+        if "cache_bytes_offloaded" in aggregates
+        else None,
+        cache_compression_ratio=aggregates["cache_compression_ratio"].mean
+        if "cache_compression_ratio" in aggregates
+        else None,
+        cache_final_tokens=int(aggregates["cache_final_tokens"].mean)
+        if "cache_final_tokens" in aggregates
+        else None,
+        ttft_ms=aggregates["ttft_ms"].mean if "ttft_ms" in aggregates else None,
+        tpot_ms=aggregates["tpot_ms"].mean if "tpot_ms" in aggregates else None,
+        prefill_ms=aggregates["prefill_ms"].mean if "prefill_ms" in aggregates else None,
+        decode_ms=aggregates["decode_ms"].mean if "decode_ms" in aggregates else None,
+        total_ms=aggregates["total_ms"].mean if "total_ms" in aggregates else None,
+        latency_p50_ms=aggregates["latency_p50_ms"].mean
+        if "latency_p50_ms" in aggregates
+        else None,
+        latency_p90_ms=aggregates["latency_p90_ms"].mean
+        if "latency_p90_ms" in aggregates
+        else None,
+        tokens_per_second=aggregates["tokens_per_second"].mean
+        if "tokens_per_second" in aggregates
+        else None,
+        quality_metric=base_record.quality_metric,
+        quality_value=aggregates["quality_value"].mean if "quality_value" in aggregates else None,
+        quality_reference=base_record.quality_reference,
+        repetitions=spec.repetitions,
+        seeds=[spec.seed + i for i in range(spec.repetitions)],
+        aggregates=aggregates,
+        repetition_records=[o.record.to_dict() for o in rep_outcomes],
+        seed=spec.seed,
+        torch_version=base_record.torch_version,
+        cuda_version=base_record.cuda_version,
+        platform=base_record.platform,
+        python_version=base_record.python_version,
+        environment=base_record.environment,
+        notes=base_record.notes,
+        status=base_record.status,
+    )
+
+    rec_problems = validate_record(aggregated_record)
+    for p in rec_problems:
+        if p not in all_problems:
+            all_problems.append(p)
+
+    return RunOutcome(
+        record=aggregated_record,
+        generation=rep_outcomes[-1].generation,
+        quality=rep_outcomes[-1].quality,
+        problems=all_problems,
+    )
 
 
 def _policy_config(cache: KVCache) -> dict[str, Any]:

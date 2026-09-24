@@ -33,7 +33,31 @@ from uniqkache.utils.logging import get_logger
 
 _log = get_logger(__name__)
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
+
+
+@dataclass
+class MetricAggregate:
+    """Statistical summary of a metric across multiple repetitions."""
+
+    mean: float
+    std: float
+    min: float
+    max: float
+    values: list[float] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MetricAggregate:
+        return cls(
+            mean=float(data["mean"]),
+            std=float(data["std"]),
+            min=float(data["min"]),
+            max=float(data["max"]),
+            values=[float(v) for v in data.get("values", [])],
+        )
 
 
 def git_commit(repo_path: str | None = None) -> str | None:
@@ -164,6 +188,12 @@ class BenchmarkRecord:
     quality_value: float | None = None
     quality_reference: float | None = None
 
+    # -- multi-seed / repetitions -----------------------------------------
+    repetitions: int = 1
+    seeds: list[int] = field(default_factory=list)
+    aggregates: dict[str, MetricAggregate] = field(default_factory=dict)
+    repetition_records: list[dict[str, Any]] = field(default_factory=list)
+
     # -- environment ------------------------------------------------------
     seed: int = 0
     torch_version: str = ""
@@ -196,6 +226,23 @@ class BenchmarkRecord:
     def quality_claimed(self) -> bool:
         """Whether this record makes a quality claim that needs support."""
         return self.quality_metric is not None and self.quality_value is not None
+
+    def aggregate(self, metric: str) -> MetricAggregate | None:
+        """Return the MetricAggregate for ``metric``, or None."""
+        return self.aggregates.get(metric)
+
+    def mean(self, metric: str) -> float | None:
+        """Return the mean of ``metric``, or None."""
+        if metric in self.aggregates:
+            return self.aggregates[metric].mean
+        val = getattr(self, metric, None)
+        return float(val) if val is not None else None
+
+    def std(self, metric: str) -> float | None:
+        """Return the standard deviation of ``metric``, or None."""
+        if metric in self.aggregates:
+            return self.aggregates[metric].std
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -240,7 +287,13 @@ class BenchmarkRecord:
                 "the record may have been produced by a different schema version",
                 sorted(unknown),
             )
-        return cls(**{k: v for k, v in data.items() if k in known})
+        kwargs = {k: v for k, v in data.items() if k in known}
+        if "aggregates" in kwargs and isinstance(kwargs["aggregates"], dict):
+            kwargs["aggregates"] = {
+                k: MetricAggregate.from_dict(v) if isinstance(v, dict) else v
+                for k, v in kwargs["aggregates"].items()
+            }
+        return cls(**kwargs)
 
 
 def validate_record(record: BenchmarkRecord) -> list[str]:
@@ -319,6 +372,22 @@ def validate_record(record: BenchmarkRecord) -> list[str]:
             "see docs/research.md."
         )
 
+    if record.repetitions < 1:
+        problems.append(f"repetitions must be >= 1, got {record.repetitions}")
+    if record.repetitions > 1:
+        if record.seeds and len(record.seeds) != record.repetitions:
+            problems.append(
+                f"seeds count ({len(record.seeds)}) does not match repetitions ({record.repetitions})"
+            )
+        if not record.aggregates:
+            problems.append(f"repetitions is {record.repetitions} but aggregates is missing")
+        else:
+            for metric_name, agg in record.aggregates.items():
+                if agg.values and len(agg.values) != record.repetitions:
+                    problems.append(
+                        f"aggregate {metric_name!r} values count ({len(agg.values)}) does not match repetitions ({record.repetitions})"
+                    )
+
     return problems
 
 
@@ -378,6 +447,7 @@ def build_record(
 __all__ = [
     "SCHEMA_VERSION",
     "BenchmarkRecord",
+    "MetricAggregate",
     "build_record",
     "environment_snapshot",
     "git_commit",

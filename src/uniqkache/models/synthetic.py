@@ -521,6 +521,7 @@ def build_cache_for_model(
     policy_name: str = "full_cache",
     device: str = "cpu",
     batch_size: int = 1,
+    **policy_kwargs: object,
 ) -> KVCache:
     """Build a cache shaped for ``model``, with a policy from the registry."""
     from uniqkache.policies import build_policy
@@ -532,7 +533,11 @@ def build_cache_for_model(
         device=device,
         batch_size=batch_size,
     )
-    policy = None if capacity is None and policy_name == "full_cache" else build_policy(policy_name)
+    policy = (
+        None
+        if capacity is None and policy_name == "full_cache"
+        else build_policy(policy_name, **policy_kwargs)
+    )
     return KVCache(config, policy=policy)
 
 

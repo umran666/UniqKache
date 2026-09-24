@@ -837,6 +837,116 @@ class TestCompressorIsNotASilentNoOp:
 
 
 # ---------------------------------------------------------------------------
+# Bug N — custom-policy example ignored `--weight` and labeled default-weight
+# runs with the requested value: the runner instantiated policies via
+# `build_policy(spec.policy)` without kwargs, so RecencyAttentionPolicy always
+# used its default weight=0.5 while the record's notes claimed the user's weight.
+# ---------------------------------------------------------------------------
+
+
+class TestCustomPolicyWeightRegression:
+    """Pins: custom-policy runs must forward policy_kwargs to the constructed policy."""
+
+    def test_custom_policy_honours_requested_weight(self):
+        from examples.custom_policy import RecencyAttentionPolicy
+
+        from uniqkache.bench.config import ExperimentConfig
+        from uniqkache.bench.runner import run_config
+
+        spec = RunSpec(
+            model="synthetic:tiny",
+            policy=RecencyAttentionPolicy.name,
+            policy_kwargs={"weight": 0.8},
+            context_length=32,
+            capacity=8,
+            attention_sinks=4,
+            device="cpu",
+            seed=0,
+            notes="custom policy, weight=0.8",
+        )
+        outcomes = run_config(
+            ExperimentConfig("weight-test", [spec]), output_dir="experiments/results", write=False
+        )
+        record = outcomes[0].record
+        assert record.policy_config.get("policy", {}).get("weight") == 0.8
+        assert "weight=0.8" in record.notes
+
+    def test_different_weights_produce_different_quality_values(self):
+        from examples.custom_policy import RecencyAttentionPolicy
+
+        from uniqkache.bench.config import ExperimentConfig
+        from uniqkache.bench.runner import run_config
+
+        spec_w0 = RunSpec(
+            model="synthetic:tiny",
+            policy=RecencyAttentionPolicy.name,
+            policy_kwargs={"weight": 0.0},
+            context_length=64,
+            capacity=16,
+            attention_sinks=4,
+            device="cpu",
+            seed=0,
+        )
+        spec_w1 = RunSpec(
+            model="synthetic:tiny",
+            policy=RecencyAttentionPolicy.name,
+            policy_kwargs={"weight": 1.0},
+            context_length=64,
+            capacity=16,
+            attention_sinks=4,
+            device="cpu",
+            seed=0,
+        )
+        outcomes = run_config(
+            ExperimentConfig("ablation", [spec_w0, spec_w1]),
+            output_dir="experiments/results",
+            write=False,
+        )
+        rec0, rec1 = outcomes[0].record, outcomes[1].record
+        assert rec0.policy_config["policy"]["weight"] == 0.0
+        assert rec1.policy_config["policy"]["weight"] == 1.0
+        assert rec0.quality_value is not None
+        assert rec1.quality_value is not None
+        assert rec0.quality_value != rec1.quality_value
+
+    def test_custom_policy_cli_execution(self, monkeypatch):
+        import sys
+
+        from examples.custom_policy import main
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["custom_policy.py", "--weight", "0.75", "--context-length", "32", "--device", "cpu"],
+        )
+        assert main() == 0
+
+    def test_run_spec_rejects_invalid_policy_kwargs_early(self):
+        from uniqkache.utils.errors import ConfigError
+
+        with pytest.raises(ConfigError):
+            RunSpec(
+                model="synthetic:tiny",
+                policy="sliding_window",
+                policy_kwargs={"nonexistent_arg": 123},
+                context_length=32,
+                capacity=8,
+            )
+
+    def test_build_cache_for_model_accepts_policy_kwargs(self):
+        from examples.custom_policy import RecencyAttentionPolicy
+
+        model = build_model("tiny", seed=0)
+        cache = build_cache_for_model(
+            model,
+            capacity=8,
+            policy_name=RecencyAttentionPolicy.name,
+            weight=0.8,
+        )
+        assert getattr(cache.policy, "weight", None) == 0.8
+
+
+# ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------
 

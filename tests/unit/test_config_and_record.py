@@ -319,6 +319,12 @@ class TestReporting:
         assert b"\r\n" not in raw
         assert raw.endswith(b"\n")
 
+    def test_csv_mode_exclusive_rejects_existing_destination(self, tmp_path: Path):
+        dest = tmp_path / "out.csv"
+        records_to_csv([good_record()], dest)
+        with pytest.raises(FileExistsError):
+            records_to_csv([good_record()], dest, mode="x")
+
     def test_summarize_groups_by_policy(self):
         summary = summarize([good_record(), good_record(policy="lru", capacity=8)])
         assert summary["total_runs"] == 2

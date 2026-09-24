@@ -837,6 +837,101 @@ class TestCompressorIsNotASilentNoOp:
 
 
 # ---------------------------------------------------------------------------
+# Bug N — write_results silently overwrote earlier experiments with the same
+# name in the same second: the output filename was derived solely from the
+# experiment name and second-resolution timestamp. Back-to-back or concurrent
+# runs with the same name erased earlier raw artifacts.
+# ---------------------------------------------------------------------------
+
+
+class TestWriteResultsCollisionRegression:
+    """Pins: write_results must allocate unique basenames and not overwrite on collision."""
+
+    @staticmethod
+    def _outcome(run_id: str) -> RunOutcome:
+        from uniqkache.metrics.record import BenchmarkRecord
+
+        return RunOutcome(
+            record=BenchmarkRecord(run_id=run_id, model="synthetic:tiny"),
+            generation=None,
+            quality=None,
+            problems=[],
+        )
+
+    def test_back_to_back_writes_in_same_second_allocate_unique_basenames(self, tmp_path: Path):
+        """The exact reproduction from Issue #72: back-to-back writes in the same second."""
+        first = write_results([self._outcome("first")], tmp_path, "experiment")
+        second = write_results([self._outcome("second")], tmp_path, "experiment")
+
+        assert first != second
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) == 2
+
+        first_records = load_records(first["jsonl"])
+        second_records = load_records(second["jsonl"])
+        assert [r.run_id for r in first_records] == ["first"]
+        assert [r.run_id for r in second_records] == ["second"]
+
+        # Complete artifact sets (.jsonl, .csv, .config.json) remain readable
+        for artifact_set in (first, second):
+            assert artifact_set["jsonl"].exists()
+            assert artifact_set["csv"].exists()
+            assert artifact_set["config"].exists()
+            config_data = json.loads(artifact_set["config"].read_text(encoding="utf-8"))
+            assert config_data["name"] == "experiment"
+
+    def test_fixed_timestamp_collision_allocates_sequential_basenames(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Deterministic collision test with a frozen clock."""
+        import time
+
+        fixed_stamp = "20260101-120000"
+        monkeypatch.setattr(time, "strftime", lambda fmt: fixed_stamp)
+
+        r1 = write_results([self._outcome("run-1")], tmp_path, "sweep")
+        r2 = write_results([self._outcome("run-2")], tmp_path, "sweep")
+        r3 = write_results([self._outcome("run-3")], tmp_path, "sweep")
+
+        assert r1["jsonl"].name == "sweep-20260101-120000.jsonl"
+        assert r2["jsonl"].name == "sweep-20260101-120000-1.jsonl"
+        assert r3["jsonl"].name == "sweep-20260101-120000-2.jsonl"
+
+        for p in (r1, r2, r3):
+            assert p["jsonl"].exists()
+            assert p["csv"].exists()
+            assert p["config"].exists()
+
+    def test_concurrent_writers_do_not_overwrite(self, tmp_path: Path, monkeypatch):
+        """Concurrent writers under the same experiment name and timestamp."""
+        import concurrent.futures
+        import time
+
+        fixed_stamp = "20260101-120000"
+        monkeypatch.setattr(time, "strftime", lambda fmt: fixed_stamp)
+
+        num_writers = 8
+
+        def worker(idx: int):
+            return write_results([self._outcome(f"worker-{idx}")], tmp_path, "concurrent")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_writers) as executor:
+            futures = [executor.submit(worker, i) for i in range(num_writers)]
+            results = [f.result() for f in futures]
+
+        assert len(list(tmp_path.glob("*.jsonl"))) == num_writers
+        assert len(list(tmp_path.glob("*.csv"))) == num_writers
+        assert len(list(tmp_path.glob("*.config.json"))) == num_writers
+
+        all_ids = set()
+        for res in results:
+            records = load_records(res["jsonl"])
+            all_ids.add(records[0].run_id)
+
+        assert all_ids == {f"worker-{i}" for i in range(num_writers)}
+
+
+# ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------
 

@@ -837,6 +837,123 @@ class TestCompressorIsNotASilentNoOp:
 
 
 # ---------------------------------------------------------------------------
+# Bug 71 — Declared transformers>=4.40 support conflicted with DynamicCache.layers API
+# ---------------------------------------------------------------------------
+
+
+class TestTransformers440DynamicCacheCompatibilityRegression:
+    """Pins: HFBackend._mirror_into_cache supports DynamicCache without .layers.
+
+    In transformers 4.40 - 4.48, DynamicCache stored KV tensors in key_cache
+    and value_cache lists without a .layers attribute. Accessing
+    self._hf_cache.layers unconditionally caused an AttributeError when
+    mirroring into UniqKache cache.
+    """
+
+    def test_transformers_440_dynamic_cache_mirrors_successfully(self):
+        from uniqkache.models.hf_backend import HFBackend
+
+        class _StubConfig:
+            model_type = "stub"
+            num_hidden_layers = 1
+            num_attention_heads = 4
+            num_key_value_heads = 2
+            hidden_size = 32
+            vocab_size = 32
+
+        # Mimics Transformers 4.40 DynamicCache (key_cache and value_cache, no layers)
+        class _DynamicCache440:
+            def __init__(self, keys, values):
+                self.key_cache = [keys]
+                self.value_cache = [values]
+
+            def __getitem__(self, idx):
+                return self.key_cache[idx], self.value_cache[idx]
+
+            def __len__(self):
+                return len(self.key_cache)
+
+        k = torch.randn(1, 2, 3, 8)
+        v = torch.randn(1, 2, 3, 8)
+
+        class _StubModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = _StubConfig()
+                self.weight = torch.nn.Parameter(torch.zeros(1, 1))
+
+            def forward(self, input_ids, **kwargs):
+                return type(
+                    "ModelOutput",
+                    (),
+                    {
+                        "logits": torch.zeros(1, input_ids.shape[1], 32),
+                        "past_key_values": _DynamicCache440(k, v),
+                    },
+                )()
+
+        backend = HFBackend(_StubModel(), identifier="stub-llama", weights_are_random=True)
+        # Pre-seed the internal cache slot so forward() does not try to build a
+        # real transformers.DynamicCache; the stub ignores past_key_values and
+        # returns its own cache structure, which is what this test exercises.
+        # CI runs without the hf extra, so _require_transformers must not be hit.
+        backend._hf_cache = None
+        cache = KVCache(backend.cache_config(capacity=None), policy=None)
+        input_ids = torch.tensor([[1, 2, 3]])
+
+        # Should not raise AttributeError: 'DynamicCache440' object has no attribute 'layers'
+        logits, _ = backend.forward(input_ids, cache=cache, start_pos=0)
+        assert logits.shape == (1, 3, 32)
+        assert cache.num_tokens(0) == 3
+        per_token = 2 * 8 * 4  # 2 heads * 8 head_dim * 4 bytes/float32 = 64
+        assert (
+            backend.mirrored_bytes == 2 * 3 * per_token
+        )  # k + v = 2 * (3 tokens * 64 bytes) = 384
+
+    def test_legacy_tuple_past_key_values_mirrors_successfully(self):
+        from uniqkache.models.hf_backend import HFBackend
+
+        class _StubConfig:
+            model_type = "stub"
+            num_hidden_layers = 1
+            num_attention_heads = 4
+            num_key_value_heads = 2
+            hidden_size = 32
+            vocab_size = 32
+
+        k = torch.randn(1, 2, 3, 8)
+        v = torch.randn(1, 2, 3, 8)
+
+        class _StubModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = _StubConfig()
+                self.weight = torch.nn.Parameter(torch.zeros(1, 1))
+
+            def forward(self, input_ids, **kwargs):
+                return type(
+                    "ModelOutput",
+                    (),
+                    {
+                        "logits": torch.zeros(1, input_ids.shape[1], 32),
+                        "past_key_values": ((k, v),),
+                    },
+                )()
+
+        backend = HFBackend(_StubModel(), identifier="stub-llama", weights_are_random=True)
+        # See the sibling 4.40 test: pre-seed so forward() never calls
+        # _require_transformers() (CI has no hf extra).
+        backend._hf_cache = None
+        cache = KVCache(backend.cache_config(capacity=None), policy=None)
+        input_ids = torch.tensor([[1, 2, 3]])
+
+        logits, _ = backend.forward(input_ids, cache=cache, start_pos=0)
+        assert logits.shape == (1, 3, 32)
+        assert cache.num_tokens(0) == 3
+        assert backend.mirrored_bytes > 0
+
+
+# ---------------------------------------------------------------------------
 # Invariants that must never regress, regardless of which bug exposed them
 # ---------------------------------------------------------------------------
 

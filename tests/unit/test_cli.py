@@ -78,6 +78,33 @@ class TestCompressorFlag:
             _run_cli(tmp_path, "--compressor", "lz4")
         assert excinfo.value.code == 2
 
+    def test_compressor_is_forwarded_in_sweep(self, monkeypatch):
+        # Regression for #45: `--sweep --compressor int8` accepted the flag but
+        # never forwarded it to the sweep expander, so every swept row ran
+        # uncompressed while the CLI exited 0 — a silently wrong experiment.
+        captured_specs = []
+
+        def mock_run_config(config, **kwargs):
+            captured_specs.extend(config.runs)
+            return []
+
+        monkeypatch.setattr("uniqkache.bench.cli.run_config", mock_run_config)
+
+        main(
+            [
+                "--model",
+                "synthetic:tiny",
+                "--policy",
+                "sliding_window",
+                "--sweep",
+                "--compressor",
+                "int8",
+            ]
+        )
+        assert len(captured_specs) > 1
+        for spec in captured_specs:
+            assert spec.compressor == "int8"
+
 
 class TestMemoryBudgetFlag:
     """`--memory-budget-mb` converts a byte budget to capacity, and records both."""

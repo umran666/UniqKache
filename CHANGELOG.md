@@ -82,6 +82,9 @@ Recorded in `docs/research.md` under Failed Experiments. The defects that can re
 carry a regression test; the two that cannot — a documentation error (F14) and a warning-noise
 fix — are covered by the checks they name instead.
 
+- `--sweep --compressor int8` silently ran the sweep uncompressed: `--compressor` was parsed but
+  never forwarded to the sweep expander, so every swept row was recorded as `compressor: None`
+  while the CLI exited 0. The flag now reaches all swept runs.
 - Quantisation gather confused the reduction axis with the granularity it produces, raising
   `IndexError` when evicting a compressed layer. Key/value axes were also transposed.
 - Asymmetric quantisation stored a clamped zero-point but dequantised with the unclamped value,

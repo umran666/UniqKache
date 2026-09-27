@@ -330,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                 model_revision=args.model_revision,
                 offline=args.offline,
                 capacity_schedule=args.capacity_schedule,
+                compressor=args.compressor,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

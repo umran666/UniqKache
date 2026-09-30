@@ -11,6 +11,7 @@ Pins:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,10 +19,43 @@ import pytest
 from uniqkache.bench.cli import main
 from uniqkache.bench.config import RunSpec
 from uniqkache.bench.runner import run_spec
+from uniqkache.metrics.record import BenchmarkRecord
 from uniqkache.metrics.report import load_records, records_to_markdown
 
 
 class TestMultiSeedRegression:
+    @pytest.mark.parametrize("policy", ["full_cache", "sliding_window"])
+    def test_paired_quality_aggregate_has_zero_delta_for_non_evicting_runs(self, policy):
+        """Issue #81: first-seed references falsely reported a multi-seed quality gain."""
+        spec = RunSpec(
+            policy=policy,
+            capacity=32 if policy == "sliding_window" else None,
+            context_length=16,
+            max_new_tokens=2,
+            repetitions=3,
+            seed=10,
+            device="cpu",
+        )
+        record = run_spec(spec).record
+        children = [BenchmarkRecord.from_dict(row) for row in record.repetition_records]
+        assert len({child.quality_value for child in children}) == 3
+        assert all(child.quality_delta == 0.0 for child in children)
+        assert record.quality_delta == pytest.approx(0.0)
+        assert record.quality_delta == record.aggregates["quality_delta"].mean
+        assert record.quality_reference == pytest.approx(
+            sum(child.quality_reference for child in children) / len(children)
+        )
+        assert record.aggregates["quality_reference"].values == [
+            child.quality_reference for child in children
+        ]
+
+        restored = BenchmarkRecord.from_dict(json.loads(json.dumps(record.to_dict())))
+        assert restored.quality_delta == record.quality_delta
+        assert restored.to_flat_dict()["quality_delta"] == record.quality_delta
+        # Exercise the reference-delta display used for pretrained model records.
+        rendered = records_to_markdown([replace(restored, weights_are_random=False)])
+        assert "(+0.0000)" in rendered
+
     def test_three_seed_run_produces_aggregates_and_std_report(self, tmp_path: Path):
         """Acceptance test 1: A 3-seed run produces a report table with std columns."""
         args = [

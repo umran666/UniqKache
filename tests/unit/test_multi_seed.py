@@ -60,6 +60,19 @@ class TestMetricAggregate:
 
 
 class TestBenchmarkRecordMultiSeed:
+    @pytest.mark.parametrize("metric", ["perplexity", "needle_retrieval"])
+    def test_quality_delta_uses_paired_aggregate_for_existing_records(self, metric):
+        delta = MetricAggregate(mean=2.0, std=1.0, min=1.0, max=3.0, values=[1.0, 3.0])
+        record = good_record(
+            repetitions=2,
+            quality_metric=metric,
+            quality_value=20.0,
+            quality_reference=10.0,
+            aggregates={"quality_delta": delta},
+        )
+        assert record.quality_delta == 2.0
+        assert record.to_dict()["quality_delta"] == 2.0
+
     def test_record_with_aggregates_and_helpers(self):
         agg = MetricAggregate(
             mean=10.0,

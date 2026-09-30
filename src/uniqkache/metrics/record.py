@@ -216,6 +216,9 @@ class BenchmarkRecord:
         "positive means better" consistent across metrics. A caller that forgets
         this would report a perplexity increase as an improvement.
         """
+        if self.repetitions > 1 and "quality_delta" in self.aggregates:
+            # Compare matching seeds, including when loading older aggregate records.
+            return self.aggregates["quality_delta"].mean
         if self.quality_value is None or self.quality_reference is None:
             return None
         if self.quality_metric in {"perplexity", "perplexity_delta"}:

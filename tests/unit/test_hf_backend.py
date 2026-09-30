@@ -69,6 +69,20 @@ def backend() -> HFBackend:
 
 
 class TestConstruction:
+    @pytest.mark.parametrize("head_dim, expected", [(16, 16), (None, 8)])
+    def test_explicit_head_dim_and_none_fallback(self, head_dim, expected):
+        class _HeadDimConfig(_StubConfig):
+            pass
+
+        model = _StubModel()
+        model.config = _HeadDimConfig()
+        model.config.head_dim = head_dim
+        backend = HFBackend(model, identifier="stub/head-dim")
+        assert backend.config["head_dim"] == expected
+        config = backend.cache_config()
+        assert config.head_dim == expected
+        assert config.bytes_per_token() == 2 * 2 * expected * 4 * 2
+
     def test_shape_metadata_is_derived_from_the_config(self, backend):
         assert backend.num_layers == 2
         assert backend.vocab_size == 128

@@ -123,13 +123,20 @@ else:
 
 
 class UniqKacheLayer(_DynamicLayerBase):  # type: ignore[misc,valid-type]
-    """Hugging Face Cache layer delegating storage and eviction to UniqKache's KVCache."""
+    """Delegate storage and eviction without extending the owner's KVCache lifetime."""
 
     def __init__(self, kv_cache: KVCache, layer_idx: int) -> None:
-        self.kv_cache = kv_cache
+        self._kv_cache_ref = weakref.ref(kv_cache)
         self.layer_idx = layer_idx
         if _DynamicLayerBase is not object:
             super().__init__()
+
+    @property
+    def kv_cache(self) -> KVCache:
+        cache = self._kv_cache_ref()
+        if cache is None:
+            raise ReferenceError("the KVCache backing this HF layer has been released")
+        return cache
 
     @property
     def keys(self) -> torch.Tensor | None:
@@ -210,15 +217,23 @@ class UniqKacheLayer(_DynamicLayerBase):  # type: ignore[misc,valid-type]
 
 
 class UniqKacheHFCache(_CacheBase):  # type: ignore[misc,valid-type]
-    """Hugging Face Cache subclass backed directly by a UniqKache KVCache."""
+    """Borrow a KVCache; the caller must retain it while using this adapter."""
 
     def __init__(self, kv_cache: KVCache) -> None:
-        self.kv_cache = kv_cache
+        # Registry values must not keep their WeakKeyDictionary keys alive.
+        self._kv_cache_ref = weakref.ref(kv_cache)
         layers: list[Any] = [UniqKacheLayer(kv_cache, idx) for idx in range(kv_cache.num_layers)]
         if _CacheBase is not object:
             super().__init__(layers=layers)
         else:
             self.layers = layers
+
+    @property
+    def kv_cache(self) -> KVCache:
+        cache = self._kv_cache_ref()
+        if cache is None:
+            raise ReferenceError("the KVCache backing this HF adapter has been released")
+        return cache
 
     def __getitem__(self, layer_idx: int) -> UniqKacheLayer:
         return self.layers[layer_idx]  # type: ignore[return-value]

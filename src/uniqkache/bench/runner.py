@@ -205,6 +205,7 @@ def _quality_reference(
     key = (
         spec.model,
         spec.seed,
+        int(prompt.shape[0]),
         int(prompt.shape[1]),
         spec.quality_chunk_size,
         str(dtype),
@@ -217,7 +218,9 @@ def _quality_reference(
 
     unbounded = _make_cache(spec, built, capacity=None, dtype=dtype, device=device)
     if spec.quality_metric == "needle_retrieval":
-        needle = random_token_ids(built.vocab_size, spec.needle_length, seed=spec.seed + 1)
+        needle = random_token_ids(
+            built.vocab_size, spec.needle_length, seed=spec.seed + 1, batch_size=spec.batch_size
+        )
         needle = needle.to(device)
         result = needle_retrieval(
             built.model,
@@ -264,7 +267,9 @@ def _warmup(
 
     Warmup cost is not recorded, because it is not part of the measured workload.
     """
-    tokens = random_token_ids(built.vocab_size, 8, seed=spec.seed).to(device)
+    tokens = random_token_ids(built.vocab_size, 8, seed=spec.seed, batch_size=spec.batch_size).to(
+        device
+    )
 
     # Phase 1: the plain forward path.
     plain_cache = _make_cache(spec, built, capacity=None, dtype=dtype, device=device)
@@ -300,7 +305,9 @@ def _warmup(
         evict_cache = _make_cache(
             warm_spec, built, capacity=warm_capacity, dtype=dtype, device=device
         )
-        long_tokens = random_token_ids(built.vocab_size, 24, seed=spec.seed).to(device)
+        long_tokens = random_token_ids(
+            built.vocab_size, 24, seed=spec.seed, batch_size=spec.batch_size
+        ).to(device)
         with torch.no_grad():
             built.model.forward(long_tokens, cache=evict_cache, start_pos=0)
         evict_cache.clear()
@@ -324,7 +331,9 @@ def _run_single_spec(
     set_seed(spec.seed)
     run_id = f"{spec.policy}-{spec.model}-{spec.context_length}-{uuid.uuid4().hex[:8]}"
 
-    prompt = random_token_ids(built.vocab_size, spec.context_length, seed=spec.seed)
+    prompt = random_token_ids(
+        built.vocab_size, spec.context_length, seed=spec.seed, batch_size=spec.batch_size
+    )
     prompt = prompt.to(device)
 
     # ---- generation ------------------------------------------------------
@@ -380,7 +389,9 @@ def _run_single_spec(
             # seed knobs, so the run stays reproducible from its spec. The
             # reference is evaluated in the same metric, not in perplexity:
             # mixing the two would make quality_delta meaningless.
-            needle = random_token_ids(built.vocab_size, spec.needle_length, seed=spec.seed + 1)
+            needle = random_token_ids(
+                built.vocab_size, spec.needle_length, seed=spec.seed + 1, batch_size=spec.batch_size
+            )
             needle = needle.to(device)
             quality = needle_retrieval(
                 built.model,

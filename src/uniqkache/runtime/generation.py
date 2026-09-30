@@ -191,7 +191,6 @@ class GenerationEngine:
         prompt_tokens = int(input_ids.shape[1])
         generated: list[torch.Tensor] = []
         per_step_ms: list[float] = []
-        hit_stop = False
 
         # ---- prefill -----------------------------------------------------
         synchronize(self.device)
@@ -215,10 +214,15 @@ class GenerationEngine:
         next_token = self._select_token(logits[:, -1, :])
         generated.append(next_token)
         self.cache.advance()
+        hit_stop = self.config.stop_token_id is not None and bool(
+            (next_token == self.config.stop_token_id).all()
+        )
 
         # ---- decode ------------------------------------------------------
         decode_start = time.perf_counter()
         for step in range(1, self.config.max_new_tokens):
+            if hit_stop:
+                break
             position = prompt_tokens + step - 1
             synchronize(self.device)
             t_step = time.perf_counter()

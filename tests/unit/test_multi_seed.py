@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from tests.conftest import good_record
+from uniqkache.bench import runner
 from uniqkache.bench.cli import _spec_from_args, build_parser
 from uniqkache.bench.config import RunSpec, percent_sweep
 from uniqkache.metrics.record import BenchmarkRecord, MetricAggregate, validate_record
@@ -209,6 +211,47 @@ class TestBenchmarkRecordMultiSeed:
 
 
 class TestRunSpecRepetitions:
+    @pytest.mark.parametrize("is_hf_backend", [False, True])
+    def test_repetition_model_build_and_warmup_follow_backend_seeding(
+        self, monkeypatch, is_hf_backend
+    ):
+        builds = []
+        warmups = []
+        iterations = []
+
+        def build(spec, dtype, device):
+            built = SimpleNamespace(is_hf_backend=is_hf_backend, initialization_seed=spec.seed)
+            builds.append(spec.seed)
+            return built
+
+        def warmup(spec, built, **kwargs):
+            warmups.append((spec.seed, built.initialization_seed))
+
+        def run_single(spec, built, **kwargs):
+            iterations.append((spec.seed, built.initialization_seed))
+            return runner.RunOutcome(good_record(seed=spec.seed), None, None, [])
+
+        monkeypatch.setattr(runner, "build_model_for_spec", build)
+        monkeypatch.setattr(runner, "_warmup", warmup)
+        monkeypatch.setattr(runner, "_run_single_spec", run_single)
+        runner.run_spec(
+            RunSpec(
+                model="org/stub" if is_hf_backend else "synthetic:tiny",
+                context_length=8,
+                repetitions=3,
+                seed=10,
+                device="cpu",
+            )
+        )
+
+        expected_builds = [10] if is_hf_backend else [10, 11, 12]
+        expected_iterations = (
+            [(10, 10), (11, 10), (12, 10)] if is_hf_backend else [(10, 10), (11, 11), (12, 12)]
+        )
+        assert builds == expected_builds
+        assert warmups == [(seed, seed) for seed in expected_builds]
+        assert iterations == expected_iterations
+
     def test_valid_repetitions(self):
         spec = RunSpec(policy="full_cache", context_length=128, repetitions=5)
         assert spec.repetitions == 5

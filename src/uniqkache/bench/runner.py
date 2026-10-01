@@ -605,6 +605,10 @@ def run_spec(
     for i in range(spec.repetitions):
         rep_seed = spec.seed + i
         rep_spec = spec.with_overrides(seed=rep_seed, repetitions=1)
+        if i > 0 and not built.is_hf_backend:
+            # Synthetic weights are seeded; each repetition must match a standalone run.
+            built = build_model_for_spec(rep_spec, dtype, device)
+            _warmup(rep_spec, built, dtype=dtype, device=device)
         outcome = _run_single_spec(
             rep_spec,
             built,

@@ -627,6 +627,7 @@ def run_spec(
         "latency_p90_ms",
         "tokens_per_second",
         "quality_value",
+        "quality_reference",
         "peak_memory_bytes",
         "cache_bytes_total",
         "cache_bytes_on_device",
@@ -749,7 +750,9 @@ def run_spec(
         else None,
         quality_metric=base_record.quality_metric,
         quality_value=aggregates["quality_value"].mean if "quality_value" in aggregates else None,
-        quality_reference=base_record.quality_reference,
+        quality_reference=aggregates["quality_reference"].mean
+        if "quality_reference" in aggregates
+        else None,
         repetitions=spec.repetitions,
         seeds=[spec.seed + i for i in range(spec.repetitions)],
         aggregates=aggregates,

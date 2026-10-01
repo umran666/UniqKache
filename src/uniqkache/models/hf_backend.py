@@ -312,7 +312,10 @@ class HFBackend:
                 f"could not determine layer/head counts from {type(config).__name__}; "
                 "this architecture is not supported by the HF backend"
             )
-        self._head_dim = self._hidden_size // max(1, self._num_heads)
+        head_dim = getattr(config, "head_dim", None)
+        self._head_dim = (
+            int(head_dim) if head_dim is not None else self._hidden_size // max(1, self._num_heads)
+        )
         self._vocab_size = int(getattr(config, "vocab_size", 0))
         self._device = next(model.parameters()).device
         self._dtype = next(model.parameters()).dtype

@@ -219,7 +219,9 @@ def records_to_markdown(records: list[BenchmarkRecord], *, title: str = "Benchma
     return "\n".join(lines) + "\n"
 
 
-def records_to_csv(records: list[BenchmarkRecord], destination: str | Path) -> Path:
+def records_to_csv(
+    records: list[BenchmarkRecord], destination: str | Path, *, mode: str = "w"
+) -> Path:
     """Write records to CSV, flattening nested fields rather than dropping them."""
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -234,15 +236,22 @@ def records_to_csv(records: list[BenchmarkRecord], destination: str | Path) -> P
             if key not in fieldnames:
                 fieldnames.append(key)
 
-    with destination.open("w", newline="", encoding="utf-8") as handle:
-        # `lineterminator="\n"` rather than the csv module's default "\r\n", so a
-        # result written on Windows matches the LF normalisation in
-        # `.gitattributes` and does not make git warn on every add. `newline=""`
-        # is still required: without it the csv module would translate the "\n"
-        # it writes into "\r\n" again.
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
+    handle = destination.open(mode, newline="", encoding="utf-8")
+    try:
+        with handle:
+            # `lineterminator="\n"` rather than the csv module's default "\r\n", so a
+            # result written on Windows matches the LF normalisation in
+            # `.gitattributes` and does not make git warn on every add. `newline=""`
+            # is still required: without it the csv module would translate the "\n"
+            # it writes into "\r\n" again.
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+    except BaseException:
+        if mode == "x":
+            # Exclusive creation proves this failed artifact belongs to this attempt.
+            destination.unlink(missing_ok=True)
+        raise
     return destination
 
 

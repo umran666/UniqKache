@@ -6,6 +6,9 @@ via UniqKacheHFCache and UniqKacheLayer.
 
 from __future__ import annotations
 
+import gc
+import weakref
+
 import pytest
 import torch
 
@@ -306,6 +309,20 @@ class TestUniqKacheLayer:
 
 
 class TestUniqKacheHFCache:
+    @pytest.mark.parametrize("wrapper", [UniqKacheHFCache, UniqKacheLayer])
+    def test_wrapper_borrows_cache_and_rejects_access_after_release(self, wrapper):
+        config = CacheConfig(num_layers=1, num_kv_heads=2, head_dim=8)
+        cache = KVCache(config)
+        adapter = wrapper(cache) if wrapper is UniqKacheHFCache else wrapper(cache, layer_idx=0)
+        assert adapter.kv_cache is cache
+        cache_ref = weakref.ref(cache)
+        del cache
+        gc.collect()
+
+        assert cache_ref() is None
+        with pytest.raises(ReferenceError, match=r"KVCache backing this HF .* has been released"):
+            adapter.get_seq_length()
+
     def test_cache_wrapping_and_layer_access(self):
         config = CacheConfig(num_layers=3, num_kv_heads=2, head_dim=8, capacity=10)
         kv_cache = KVCache(config, policy=SlidingWindowPolicy())

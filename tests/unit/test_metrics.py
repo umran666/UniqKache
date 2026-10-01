@@ -206,6 +206,18 @@ class TestLatency:
 
 
 class TestQualityPrimitives:
+    def test_random_token_ids_construct_distinct_deterministic_batches(self):
+        tokens = random_token_ids(100, 20, seed=7, batch_size=2)
+        assert tokens.shape == (2, 20)
+        assert torch.equal(tokens, random_token_ids(100, 20, seed=7, batch_size=2))
+        assert torch.equal(tokens[:1], random_token_ids(100, 20, seed=7))
+        assert not torch.equal(tokens[0], tokens[1])
+
+    @pytest.mark.parametrize("batch_size", [0, -1])
+    def test_random_token_ids_reject_invalid_batch_size(self, batch_size):
+        with pytest.raises(BackendError, match="batch_size"):
+            random_token_ids(100, 20, batch_size=batch_size)
+
     def test_random_token_ids_are_deterministic(self):
         a = random_token_ids(100, 20, seed=1)
         b = random_token_ids(100, 20, seed=1)

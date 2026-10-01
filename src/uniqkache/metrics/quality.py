@@ -108,8 +108,10 @@ def _model_has_random_weights(model: object) -> bool:
     return bool(getattr(model, "weights_are_random", False))
 
 
-def random_token_ids(vocab_size: int, length: int, seed: int = 0) -> torch.Tensor:
-    """Deterministic pseudo-random token ids of shape ``[1, length]``.
+def random_token_ids(
+    vocab_size: int, length: int, seed: int = 0, *, batch_size: int = 1
+) -> torch.Tensor:
+    """Deterministic pseudo-random token ids of shape ``[batch_size, length]``.
 
     Used to build a workload of a given length without a dataset or a tokenizer.
     Deterministic from ``seed`` so that two cache policies are evaluated on
@@ -119,8 +121,10 @@ def random_token_ids(vocab_size: int, length: int, seed: int = 0) -> torch.Tenso
         raise BackendError(f"vocab_size must be >= 1, got {vocab_size}")
     if length < 1:
         raise BackendError(f"length must be >= 1, got {length}")
+    if batch_size < 1:
+        raise BackendError(f"batch_size must be >= 1, got {batch_size}")
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    return torch.randint(0, vocab_size, (1, length), generator=generator)
+    return torch.randint(0, vocab_size, (batch_size, length), generator=generator)
 
 
 def perplexity(
@@ -280,7 +284,7 @@ def needle_retrieval(
     haystack_length:
         Total context length including the needle.
     needle:
-        ``[1, k]`` token ids to insert and then attempt to recover.
+        ``[batch_size, k]`` token ids to insert and then attempt to recover.
     vocab_size:
         Vocabulary size for generating filler.
     depth:
@@ -306,6 +310,9 @@ def needle_retrieval(
     """
     if not 0.0 <= depth <= 1.0:
         raise BackendError(f"depth must be in [0, 1], got {depth}")
+    if needle.ndim != 2 or needle.shape[0] < 1:
+        raise BackendError("needle must have shape [batch_size, length] with batch_size >= 1")
+    batch_size = int(needle.shape[0])
     needle_len = int(needle.shape[1])
     if needle_len < 1:
         raise BackendError("needle must contain at least one token")
@@ -315,7 +322,7 @@ def needle_retrieval(
             "needle plus context"
         )
 
-    filler = random_token_ids(vocab_size, haystack_length, seed=seed)
+    filler = random_token_ids(vocab_size, haystack_length, seed=seed, batch_size=batch_size)
     # The needle may live on another device (the runner pins it to the model's
     # device); the haystack adopts the needle's device so the concatenation and
     # the forward pass see one device.
@@ -361,7 +368,7 @@ def needle_retrieval(
     return QualityResult(
         metric="needle_retrieval",
         value=score,
-        num_tokens=haystack_length,
+        num_tokens=batch_size * haystack_length,
         is_interpretable=not random_weights,
         caveat=(
             RANDOM_WEIGHT_CAVEAT
@@ -374,6 +381,7 @@ def needle_retrieval(
         ),
         details={
             "haystack_length": haystack_length,
+            "batch_size": batch_size,
             "needle_length": needle_len,
             "depth": depth,
             "seed": seed,

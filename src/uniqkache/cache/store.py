@@ -305,6 +305,8 @@ class LayerStorage:
         if self._compressed is not None:
             self.materialize()
 
+        if self.is_offloaded:
+            self.move_to(self.device)
         keys = keys.to(device=self.device, dtype=self.dtype)
         values = values.to(device=self.device, dtype=self.dtype)
         num_new = int(keys.shape[2])
@@ -663,7 +665,7 @@ class LayerStorage:
             )
             self._keys = None
             self._values = None
-            self._offloaded = is_offloaded
+            self._offloaded = is_offloaded if target_device is None else dev != self.device
             self.metadata.load_state_dict(
                 state["metadata"], device=dev, expected_num_tokens=num_tokens
             )
@@ -706,7 +708,7 @@ class LayerStorage:
             self._keys = keys
             self._values = values
             self._compressed = None
-            self._offloaded = is_offloaded
+            self._offloaded = is_offloaded if target_device is None else dev != self.device
             seq_len = int(keys.shape[2])
             self.metadata.load_state_dict(
                 state["metadata"], device=dev, expected_num_tokens=seq_len
@@ -972,7 +974,10 @@ class KVStore:
 
         store = cls(config)
         for layer_storage, layer_dict in zip(store.layers, saved_layers):
-            layer_storage.load_state_dict(layer_dict, config=config)
+            mapped_device = None
+            if map_location is not None:
+                mapped_device = layer_dict["metadata"]["positions"].device
+            layer_storage.load_state_dict(layer_dict, config=config, target_device=mapped_device)
 
         _log.info("loaded KV cache checkpoint from %s (layers=%d)", target, len(store))
         return store

@@ -521,6 +521,9 @@ class KVCache:
                 "capacity=None for an unbounded full cache."
             )
         self.config = self.config.with_capacity(capacity)
+        self._store.config = self.config
+        for idx, layer in enumerate(self._store.layers):
+            layer.capacity = self.config.capacity_for_layer(idx)
         if self.auto_enforce and self.config.capacity is not None:
             self.enforce_capacity()
 
@@ -653,6 +656,17 @@ class KVCache:
         if not saved_config_dict:
             raise CacheStateError("checkpoint missing 'config'")
 
+        saved_config_dict = dict(saved_config_dict)
+        if isinstance(map_location, (str, torch.device)):
+            saved_config_dict["device"] = str(map_location)
+        elif isinstance(map_location, dict):
+            saved_device = saved_config_dict["device"]
+            saved_config_dict["device"] = str(map_location.get(saved_device, saved_device))
+        elif callable(map_location):
+            for layer in raw.get("layers", []):
+                if not layer.get("is_offloaded", False):
+                    saved_config_dict["device"] = str(layer["metadata"]["positions"].device)
+                    break
         resolved_config = CacheConfig.from_dict(saved_config_dict)
         if config is not None:
             # Validate provided config against checkpoint config

@@ -19,6 +19,7 @@ quality measurement alongside it. See
 
 from __future__ import annotations
 
+import math
 import platform
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -34,6 +35,16 @@ from uniqkache.utils.logging import get_logger
 _log = get_logger(__name__)
 
 SCHEMA_VERSION = "1.1.0"
+
+
+def _finite_json(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _finite_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite_json(item) for item in value]
+    return value
 
 
 @dataclass
@@ -188,6 +199,7 @@ class BenchmarkRecord:
     quality_metric: str | None = None
     quality_value: float | None = None
     quality_reference: float | None = None
+    quality_details: dict[str, Any] = field(default_factory=dict)
 
     # -- multi-seed / repetitions -----------------------------------------
     repetitions: int = 1
@@ -229,7 +241,11 @@ class BenchmarkRecord:
     @property
     def quality_claimed(self) -> bool:
         """Whether this record makes a quality claim that needs support."""
-        return self.quality_metric is not None and self.quality_value is not None
+        return (
+            self.quality_metric is not None
+            and self.quality_value is not None
+            and math.isfinite(self.quality_value)
+        )
 
     def aggregate(self, metric: str) -> MetricAggregate | None:
         """Return the MetricAggregate for ``metric``, or None."""
@@ -251,7 +267,7 @@ class BenchmarkRecord:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["quality_delta"] = self.quality_delta
-        return data
+        return _finite_json(data)
 
     def to_flat_dict(self) -> dict[str, Any]:
         """Flatten nested dictionaries for CSV output.
@@ -310,6 +326,63 @@ def validate_record(record: BenchmarkRecord) -> list[str]:
     surfaces them, so a record cannot pass silently.
     """
     problems: list[str] = []
+
+    nonnegative = {
+        "model_num_parameters",
+        "context_length",
+        "generated_tokens",
+        "batch_size",
+        "attention_sinks",
+        "memory_budget_mb",
+        "peak_memory_bytes",
+        "cache_bytes_total",
+        "cache_bytes_on_device",
+        "cache_bytes_offloaded",
+        "cache_payload_bytes",
+        "cache_compression_ratio",
+        "cache_final_tokens",
+        "mirror_overhead_bytes",
+        "ttft_ms",
+        "tpot_ms",
+        "prefill_ms",
+        "decode_ms",
+        "total_ms",
+        "latency_p50_ms",
+        "latency_p90_ms",
+        "tokens_per_second",
+    }
+
+    def check_numbers(value: Any, path: str = "") -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            problems.append(f"{path} must be finite, got {value}")
+        elif (
+            isinstance(value, (int, float))
+            and (
+                path.split("[")[0] in nonnegative
+                or path.split("[")[0] in {"tokens_per_layer", "utilization_per_layer", "capacity"}
+                or (
+                    path.startswith("aggregates.")
+                    and (path.split(".")[1] in nonnegative or path.endswith(".std"))
+                )
+            )
+            and value < 0
+        ):
+            problems.append(f"{path} must be nonnegative, got {value}")
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                check_numbers(item, f"{path}.{key}" if path else str(key))
+        elif isinstance(value, list):
+            for idx, item in enumerate(value):
+                check_numbers(item, f"{path}[{idx}]")
+
+    check_numbers(asdict(record))
+    for name in ("quality_value", "quality_reference"):
+        value = getattr(record, name)
+        if value is not None and math.isfinite(value):
+            if record.quality_metric == "perplexity" and value <= 0:
+                problems.append(f"{name} must be positive for perplexity")
+            if record.quality_metric == "needle_retrieval" and not 0 <= value <= 1:
+                problems.append(f"{name} must be in [0, 1] for needle_retrieval")
 
     if not record.model:
         problems.append("model is empty; the record does not say what was measured")

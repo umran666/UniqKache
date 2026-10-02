@@ -11,12 +11,15 @@ Raw output from benchmark runs. These files are what the numbers in
 | `superseded/` | **Not current.** Kept as evidence. Do not quote. |
 | `runs/`, `raw/` | Git-ignored scratch output from exploratory runs. |
 
-Each run produces three files:
+Each new run produces four files:
 
 - `.jsonl` — one `BenchmarkRecord` per run, the canonical form;
 - `.csv` — the same records flattened (nested keys joined with `.`);
-- `.config.json` — the experiment config that produced them, plus any integrity problems
-  `validate_record` raised.
+- `.config.json` - source run specifications reloadable by the configuration loader;
+- `.diagnostics.json` - integrity problems reported by `validate_record`.
+
+Historical sidecars retain their original format; newly written configs can be replayed
+directly. Quality task details are also stored in JSONL and flattened CSV records.
 
 The schema is documented in [`docs/benchmarks.md`](../../docs/benchmarks.md#record-schema).
 

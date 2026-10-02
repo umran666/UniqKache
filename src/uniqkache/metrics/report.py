@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -30,7 +31,7 @@ RESULT_GLOBS = ("*.jsonl", "*.json")
 # Without this exclusion, a results directory that the runner itself populated
 # fails to summarise -- which is the only kind of directory this command is
 # pointed at.
-EXCLUDED_SUFFIXES = (".config.json",)
+EXCLUDED_SUFFIXES = (".config.json", ".diagnostics.json")
 
 
 def load_records(path: str | Path) -> list[BenchmarkRecord]:
@@ -260,16 +261,42 @@ def summarize(records: list[BenchmarkRecord]) -> dict[str, Any]:
     grouped = group_by_policy(records)
     out: dict[str, Any] = {"total_runs": len(records), "policies": {}}
     for policy, group in grouped.items():
-        peaks = [r.peak_memory_bytes for r in group if r.peak_memory_bytes is not None]
-        caches = [r.cache_bytes_total for r in group if r.cache_bytes_total is not None]
-        ttfts = [r.ttft_ms for r in group if r.ttft_ms is not None]
-        qualities = [r.quality_value for r in group if r.quality_value is not None]
+        peaks = [
+            r.peak_memory_bytes
+            for r in group
+            if r.peak_memory_bytes is not None and math.isfinite(r.peak_memory_bytes)
+        ]
+        caches = [
+            r.cache_bytes_total
+            for r in group
+            if r.cache_bytes_total is not None and math.isfinite(r.cache_bytes_total)
+        ]
+        ttfts = [r.ttft_ms for r in group if r.ttft_ms is not None and math.isfinite(r.ttft_ms)]
+        qualities = [
+            r.quality_value
+            for r in group
+            if r.quality_value is not None and math.isfinite(r.quality_value)
+        ]
+        by_metric: dict[str, list[float]] = defaultdict(list)
+        for record in group:
+            if (
+                record.quality_metric is not None
+                and record.quality_value is not None
+                and math.isfinite(record.quality_value)
+            ):
+                by_metric[record.quality_metric].append(record.quality_value)
         out["policies"][policy] = {
             "runs": len(group),
             "mean_peak_memory_bytes": sum(peaks) / len(peaks) if peaks else None,
             "mean_cache_bytes": sum(caches) / len(caches) if caches else None,
             "mean_ttft_ms": sum(ttfts) / len(ttfts) if ttfts else None,
-            "mean_quality": sum(qualities) / len(qualities) if qualities else None,
+            "mean_quality": sum(qualities) / len(qualities)
+            if qualities and len(by_metric) == 1
+            else None,
+            "quality_by_metric": {
+                metric: {"runs": len(values), "mean": sum(values) / len(values)}
+                for metric, values in sorted(by_metric.items())
+            },
         }
     return out
 
@@ -312,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.dumps(
             {"summary": summarize(records), "records": [r.to_dict() for r in records]},
             indent=2,
+            allow_nan=False,
         )
         if args.output:
             Path(args.output).write_text(payload, encoding="utf-8")

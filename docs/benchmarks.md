@@ -247,10 +247,23 @@ record that reports throughput without the count cannot be checked.
 | --- | --- |
 | `<name>-<timestamp>.jsonl` | One JSON record per run. The canonical form. |
 | `<name>-<timestamp>.csv` | The same records flattened. Nested keys are joined with `.` so no information is dropped. |
-| `<name>-<timestamp>.config.json` | The experiment config that produced them, plus any integrity problems. |
+| `<name>-<timestamp>.config.json` | Source run specifications, reloadable with `load_config` and replayable with `--config`. |
+| `<name>-<timestamp>.diagnostics.json` | Integrity problems, separate from the replayable config. |
 
 The CSV path flattens rather than selects. A CSV row that dropped the policy config would be
 less reproducible than the JSONL row it came from.
+
+Retrieval parameters and effective task lengths, expected tokens, and predictions
+are retained in `quality_details` in the record, including flattened CSV columns.
+The source spec preserves needle length/depth and the repetition count. Manually
+constructed `RunOutcome` objects must supply their `spec` before `write_results`;
+missing source configuration is rejected rather than inferred from measurements.
+
+Non-finite measurements fail integrity validation and serialize as `null` in strict
+JSON, with the failure retained in diagnostics. They do not count as measured quality
+or enter repetition averages. Summaries group quality by metric; `mean_quality` is
+unmeasured when a policy group contains incompatible quality metrics. `full_cache`
+is an unbounded reference and rejects capacity, retention ratio, and byte budgets.
 
 ---
 

@@ -118,6 +118,8 @@ class RunSpec:
             )
         if self.keep_ratio is not None and not 0.0 < self.keep_ratio <= 1.0:
             raise ConfigError(f"keep_ratio must be in (0, 1], got {self.keep_ratio}")
+        if self.capacity is not None and self.capacity < 1:
+            raise ConfigError(f"capacity must be >= 1, got {self.capacity}")
         if self.memory_budget_mb is not None and self.memory_budget_mb <= 0:
             raise ConfigError(f"memory_budget_mb must be > 0, got {self.memory_budget_mb}")
         if self.attention_sinks < 0:
@@ -173,6 +175,10 @@ class RunSpec:
                 f"attention_sinks {self.attention_sinks} exceeds the resolved capacity "
                 f"{self.resolved_capacity}; the protected tokens would leave no room "
                 "for any evictable token"
+            )
+        if self.policy == "full_cache" and budget_fields:
+            raise ConfigError(
+                "full_cache is an unbounded reference; token-budget fields are not allowed"
             )
         if (
             self.policy != "full_cache"

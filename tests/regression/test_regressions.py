@@ -488,10 +488,12 @@ class TestResultArtifactLineEndingsRegression:
     """Pins: results are written with LF endings on every platform."""
 
     def test_write_results_emits_lf_only(self, tmp_path: Path):
-        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        outcome = RunOutcome(
+            record=good_record(), generation=None, quality=None, problems=[], spec=RunSpec()
+        )
         paths = write_results([outcome], tmp_path, "line-endings")
 
-        assert set(paths) == {"jsonl", "csv", "config"}
+        assert set(paths) == {"jsonl", "csv", "config", "diagnostics"}
         for label, path in paths.items():
             # Read as bytes: text mode would translate the endings away and
             # hide exactly the bug this test exists for.
@@ -500,12 +502,16 @@ class TestResultArtifactLineEndingsRegression:
             assert raw.endswith(b"\n"), f"{label} does not end with a newline"
 
     def test_the_written_jsonl_round_trips(self, tmp_path: Path):
-        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        outcome = RunOutcome(
+            record=good_record(), generation=None, quality=None, problems=[], spec=RunSpec()
+        )
         paths = write_results([outcome], tmp_path, "round-trip")
         assert load_records(paths["jsonl"])[0].run_id == "r1"
 
     def test_the_written_config_is_not_mistaken_for_a_record(self, tmp_path: Path):
-        outcome = RunOutcome(record=good_record(), generation=None, quality=None, problems=[])
+        outcome = RunOutcome(
+            record=good_record(), generation=None, quality=None, problems=[], spec=RunSpec()
+        )
         write_results([outcome], tmp_path, "config-vs-record")
         # Bug 6's failure mode, checked against real runner output rather than a
         # hand-built fixture: the config file sits beside the record and must be
@@ -1109,6 +1115,7 @@ class TestWriteResultsCollisionRegression:
             generation=None,
             quality=None,
             problems=[],
+            spec=RunSpec(),
         )
 
     def test_back_to_back_writes_in_same_second_allocate_unique_basenames(self, tmp_path: Path):

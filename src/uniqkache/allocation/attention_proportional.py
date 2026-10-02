@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+
 from uniqkache.allocation.base import BaseAllocationStrategy
 from uniqkache.allocation.registry import register_alias, register_allocation_strategy
 from uniqkache.utils.errors import CacheConfigError
@@ -14,13 +16,14 @@ if TYPE_CHECKING:
 
 @register_allocation_strategy
 class AttentionProportionalAllocationStrategy(BaseAllocationStrategy):
-    """Allocates a total token budget proportional to per-layer accumulated attention.
+    """Allocate a total token budget proportional to attention concentration.
 
     Early and late layers typically exhibit higher attention concentration than
-    middle layers. This strategy measures the cumulative attention mass absorbed
-    by each layer during prefill and allocates the evictable token budget in
-    proportion to that attention, guaranteeing that every layer receives at least
-    its required attention sinks.
+    middle layers. This heuristic normalizes each layer's accumulated key
+    attention and uses sum(p**2) as its concentration statistic. Unlike total
+    normalized probability, it distinguishes focused and diffuse attention.
+    Every layer receives at least its required attention sinks. This is an
+    experimental allocation heuristic, not a claim of improved quality.
     """
 
     name = "attention_proportional"
@@ -48,8 +51,13 @@ class AttentionProportionalAllocationStrategy(BaseAllocationStrategy):
         layer_attentions: list[float] = []
         for i in range(num_layers):
             cum_att = cache.store.layer(i).metadata.cum_attention
-            val = float(cum_att.sum().item()) if cum_att.numel() > 0 else 0.0
-            layer_attentions.append(max(0.0, val))
+            if not torch.isfinite(cum_att).all() or (cum_att < 0).any():
+                raise CacheConfigError("attention allocation requires finite, nonnegative signals")
+            mass = float(cum_att.sum().item())
+            concentration = (
+                float((cum_att.double() / mass).square().sum().item()) if mass > 0 else 0.0
+            )
+            layer_attentions.append(concentration)
 
         total_att = sum(layer_attentions)
         if total_att <= 0.0:

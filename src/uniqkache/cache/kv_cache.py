@@ -452,7 +452,9 @@ class KVCache:
             Override the query row explicitly.
         """
         weights = reduce_attention(attention, mode=mode, query_index=query_index)
-        self._store.layer(layer_idx).metadata.note_attention(weights, step=self._step)
+        self._store.layer(layer_idx).metadata.note_attention(
+            weights, step=self._step, threshold=self.config.attention_access_threshold
+        )
 
     def note_access(self, layer_idx: int, indices: torch.Tensor) -> None:
         """Record an explicit read of specific slots (used by prefetch paths)."""

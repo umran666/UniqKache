@@ -6,6 +6,7 @@ library) so that every other module can import from it without creating cycles.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -61,8 +62,14 @@ class CacheConfig:
     capacity: int | list[int] | None = None
     attention_sinks: int = 0
     batch_size: int = 1
+    attention_access_threshold: float = 1e-6
 
     def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.attention_access_threshold)
+            or self.attention_access_threshold < 0
+        ):
+            raise CacheConfigError("attention_access_threshold must be finite and >= 0")
         if self.num_layers < 1:
             raise CacheConfigError(f"num_layers must be >= 1, got {self.num_layers}")
         if self.num_kv_heads < 1:
@@ -177,6 +184,7 @@ class CacheConfig:
             capacity=capacity,
             attention_sinks=self.attention_sinks,
             batch_size=self.batch_size,
+            attention_access_threshold=self.attention_access_threshold,
         )
 
     def to_dict(self) -> dict[str, Any]:

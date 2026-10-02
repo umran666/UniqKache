@@ -195,11 +195,10 @@ class GenerationEngine:
         # ---- prefill -----------------------------------------------------
         synchronize(self.device)
         t_start = time.perf_counter()
-        logits, weights = self._forward(input_ids, start_pos=0, is_prefill=True)
+        logits, _ = self._forward(input_ids, start_pos=0, is_prefill=True)
         synchronize(self.device)
         prefill_ms = (time.perf_counter() - t_start) * 1000.0
-        ttft_ms = prefill_ms
-        self._absorb_attention(weights, mode="all_queries")
+        ttft_ms = prefill_ms if self.config.max_new_tokens else None
 
         if self.allocation_strategy is not None:
             total_budget = self.cache.config.total_capacity()
@@ -211,12 +210,15 @@ class GenerationEngine:
                 )
                 self.cache.set_capacity(new_caps)
 
-        next_token = self._select_token(logits[:, -1, :])
-        generated.append(next_token)
-        self.cache.advance()
-        hit_stop = self.config.stop_token_id is not None and bool(
-            (next_token == self.config.stop_token_id).all()
-        )
+        next_token = input_ids[:, :0]
+        hit_stop = False
+        if self.config.max_new_tokens:
+            next_token = self._select_token(logits[:, -1, :])
+            generated.append(next_token)
+            self.cache.advance()
+            hit_stop = self.config.stop_token_id is not None and bool(
+                (next_token == self.config.stop_token_id).all()
+            )
 
         # ---- decode ------------------------------------------------------
         decode_start = time.perf_counter()
@@ -226,12 +228,9 @@ class GenerationEngine:
             position = prompt_tokens + step - 1
             synchronize(self.device)
             t_step = time.perf_counter()
-            step_logits, step_weights = self._forward(
-                next_token, start_pos=position, is_prefill=False
-            )
+            step_logits, _ = self._forward(next_token, start_pos=position, is_prefill=False)
             synchronize(self.device)
             per_step_ms.append((time.perf_counter() - t_step) * 1000.0)
-            self._absorb_attention(step_weights, mode="last_query")
 
             next_token = self._select_token(step_logits[:, -1, :])
             generated.append(next_token)
@@ -243,7 +242,7 @@ class GenerationEngine:
                 hit_stop = True
                 break
 
-        decode_ms = (time.perf_counter() - decode_start) * 1000.0
+        decode_ms = (time.perf_counter() - decode_start) * 1000.0 if per_step_ms else 0.0
         total_ms = prefill_ms + decode_ms
 
         generated_ids = torch.cat(generated, dim=1) if generated else input_ids[:, :0]
@@ -253,7 +252,7 @@ class GenerationEngine:
         # fast instead of "not measured".
         tpot_ms = (sum(per_step_ms) / len(per_step_ms)) if per_step_ms else None
         tokens_per_second = (
-            generated_tokens / (decode_ms / 1000.0) if decode_ms > 0 and generated_tokens else None
+            len(per_step_ms) / (decode_ms / 1000.0) if decode_ms > 0 and per_step_ms else None
         )
 
         return GenerationResult(
@@ -282,13 +281,14 @@ class GenerationEngine:
         is_prefill: bool,
     ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
         """Run one forward pass, requesting attention only when it is used."""
-        with torch.no_grad():
+        with torch.no_grad(), self.cache.defer_enforcement():
             logits, weights = self.model.forward(
                 input_ids,
                 cache=self.cache,
                 start_pos=start_pos,
                 return_attention=self.record_attention,
             )
+            self._absorb_attention(weights, mode="all_queries" if is_prefill else "last_query")
         if is_prefill and logits.shape[1] != input_ids.shape[1]:
             raise BackendError(
                 f"prefill returned {logits.shape[1]} positions for {input_ids.shape[1]} "

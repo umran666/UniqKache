@@ -155,24 +155,15 @@ def test_attention_proportional_allocation_strategy():
     cfg = CacheConfig(num_layers=3, num_kv_heads=1, head_dim=16, capacity=20, attention_sinks=2)
     cache = KVCache(cfg, policy=SlidingWindowPolicy())
 
-    # Setup dummy cumulative attention in layer metadata
-    # Layer 0: high attention (70%), Layer 1: medium (20%), Layer 2: low (10%)
-    cache.store.layer(0).metadata._cum_attention = torch.tensor([7.0])
-    cache.store.layer(1).metadata._cum_attention = torch.tensor([2.0])
-    cache.store.layer(2).metadata._cum_attention = torch.tensor([1.0])
-
-    # Sinks per layer = 2 -> 6 tokens fixed.
-    # Total budget = 30 -> surplus = 24 tokens.
-    # Proportions: 70% of 24 = 16.8, 20% of 24 = 4.8, 10% of 24 = 2.4
-    # With largest-remainder:
-    # floored: 16, 4, 2 -> sum = 22, remaining = 2
-    # remainders: 0.8, 0.8, 0.4 -> layers 0 and 1 get +1 -> 17, 5, 2
-    # Total caps = sinks + surplus = [19, 7, 4]
+    # Normalized key distributions have concentrations 1, 1/2, and 1/4.
+    cache.store.layer(0).metadata._cum_attention = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    cache.store.layer(1).metadata._cum_attention = torch.tensor([0.5, 0.5, 0.0, 0.0])
+    cache.store.layer(2).metadata._cum_attention = torch.tensor([0.25] * 4)
     caps = strategy.allocate(total_budget=30, cache=cache)
     assert sum(caps) == 30
     assert all(c >= 2 for c in caps)
     assert caps[0] > caps[1] > caps[2]
-    assert caps == [19, 7, 4]
+    assert caps == [16, 9, 5]
 
     # Zero attention fallback: should distribute surplus uniformly
     cache.store.layer(0).metadata._cum_attention = torch.tensor([0.0])

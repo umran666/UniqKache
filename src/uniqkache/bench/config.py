@@ -22,6 +22,7 @@ Example
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,7 @@ class RunSpec:
     keep_ratio: float | None = None
     memory_budget_mb: float | None = None
     attention_sinks: int = 0
+    attention_access_threshold: float = 1e-6
     precision: str = "float32"
     device: str = "auto"
     seed: int = 0
@@ -97,6 +99,11 @@ class RunSpec:
     notes: str = ""
 
     def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.attention_access_threshold)
+            or self.attention_access_threshold < 0
+        ):
+            raise ConfigError("attention_access_threshold must be finite and >= 0")
         if self.repetitions < 1:
             raise ConfigError(f"repetitions must be >= 1, got {self.repetitions}")
         if self.context_length < 2:

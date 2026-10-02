@@ -457,6 +457,7 @@ def _run_single_spec(
         gpu_compute_capability=hardware.compute_capability,
         peak_memory_bytes=generation.peak_memory_bytes,
         cache_bytes_total=cache_stats.get("bytes_total"),
+        cache_payload_bytes=cache_stats.get("payload_bytes"),
         cache_bytes_on_device=cache_stats.get("bytes_on_device"),
         cache_bytes_offloaded=cache_stats.get("bytes_offloaded"),
         cache_compression_ratio=cache_stats.get("compression_ratio"),

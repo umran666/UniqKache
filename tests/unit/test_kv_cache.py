@@ -469,9 +469,7 @@ class TestPreallocatedBuffer:
         assert storage._keys_buf.shape[2] == buf_cap_before
         assert storage.num_tokens == len(keep_indices) + 1
 
-    def test_bytes_accounting_reflects_occupied_tokens_not_buffer_capacity(
-        self, bounded_config, kv_factory
-    ):
+    def test_bytes_accounting_reflects_physical_buffer_capacity(self, bounded_config, kv_factory):
         from uniqkache.cache.store import LayerStorage
 
         storage = LayerStorage(
@@ -485,8 +483,9 @@ class TestPreallocatedBuffer:
             capacity=bounded_config.capacity,
         )
         storage.append(kv_factory(2), kv_factory(2))
-        expected_bytes = bounded_config.bytes_per_token_per_layer() * 2
+        expected_bytes = bounded_config.bytes_per_token_per_layer() * bounded_config.capacity
         assert storage.bytes() == expected_bytes
+        assert storage.payload_bytes() == bounded_config.bytes_per_token_per_layer() * 2
 
     def test_append_latency_scales_linearly_not_quadratically(self, kv_factory):
         import time

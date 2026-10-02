@@ -45,6 +45,8 @@ def register_policy(cls: PolicyT) -> PolicyT:
     if not isinstance(name, str) or not name:
         raise PolicyError(f"{cls.__name__} must define a non-empty class attribute `name`")
 
+    if name in _ALIASES:
+        raise PolicyError(f"policy name {name!r} collides with a registered alias")
     existing = _REGISTRY.get(name)
     if existing is not None and existing is not cls:
         raise PolicyError(

@@ -228,9 +228,7 @@ class GenerationEngine:
             position = prompt_tokens + step - 1
             synchronize(self.device)
             t_step = time.perf_counter()
-            step_logits, _ = self._forward(
-                next_token, start_pos=position, is_prefill=False
-            )
+            step_logits, _ = self._forward(next_token, start_pos=position, is_prefill=False)
             synchronize(self.device)
             per_step_ms.append((time.perf_counter() - t_step) * 1000.0)
 

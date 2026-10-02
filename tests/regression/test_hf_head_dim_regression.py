@@ -38,7 +38,8 @@ def test_explicit_head_dim_accepts_matching_kv_tensors_without_transformers():
     backend.forward(torch.tensor([[1, 2, 3]]), cache)
     keys, values = cache.get(0)
     assert keys.shape == values.shape == (1, 2, 3, 16)
-    assert cache.stats().bytes_total == 2 * 1 * 2 * 3 * 16 * 4
+    assert cache.stats().payload_bytes == 2 * 1 * 2 * 3 * 16 * 4
+    assert cache.stats().bytes_total >= cache.stats().payload_bytes
 
 
 @pytest.mark.regression

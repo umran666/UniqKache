@@ -153,7 +153,8 @@ Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_impor
 
 | Field | Meaning |
 | --- | --- |
-| `cache_bytes_total` | Total KV footprint across all layers. |
+| `cache_bytes_total` | Physical K/V backing storage across all layers, including unused allocation slots. |
+| `cache_payload_bytes` | Live K/V payload without unused allocation slots; logical occupancy is reported separately. |
 | `cache_bytes_on_device` | The part resident on the compute device. |
 | `cache_bytes_offloaded` | The part moved to another tier. |
 | `cache_compression_ratio` | Representation change. `1.0` means uncompressed. |
@@ -165,13 +166,21 @@ Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_impor
 single "memory saved" number would let an offload, which frees nothing and costs bandwidth,
 look identical to an eviction, which actually destroys information.
 
-The accounting identity, verified exact against measurement (see `docs/research.md`, R3):
+The logical, uncompressed payload identity (the historical R3 figures used this accounting):
 
 ```
 bytes = num_layers × tokens × num_kv_heads × head_dim × 2 (K and V) × element_size
 ```
 
 For `synthetic:tiny`: 4 × tokens × 2 × 32 × 2 × 4 = **2048 bytes per token**.
+
+Resident storage can exceed this payload because unbounded buffers grow geometrically
+and bounded buffers reserve their configured capacity. Resident byte fields count that
+storage. Eviction trims oversized buffers to the token capacity (or surviving occupancy
+when unbounded); full eviction releases float and quantized payloads. A bounded decode
+may allocate temporarily before eviction. These fields count K/V tensor storage, not
+metadata, model parameters, or memory reserved by PyTorch's allocator. Historical result
+files using logical byte counts cannot establish physical resident memory savings.
 
 ### Latency
 

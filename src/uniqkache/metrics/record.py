@@ -162,6 +162,7 @@ class BenchmarkRecord:
     # -- memory -----------------------------------------------------------
     peak_memory_bytes: int | None = None
     cache_bytes_total: int | None = None
+    cache_payload_bytes: int | None = None
     cache_bytes_on_device: int | None = None
     cache_bytes_offloaded: int | None = None
     cache_compression_ratio: float | None = None

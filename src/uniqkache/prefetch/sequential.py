@@ -47,7 +47,7 @@ class NextLayerPrefetch(BasePrefetchPolicy):
 
         num_layers = len(store)
         candidates: list[int] = []
-        for offset in range(1, self.depth + 1):
+        for offset in range(1, min(self.depth, num_layers) + 1):
             idx = cursor + offset
             if idx >= num_layers:
                 if not self.wrap:

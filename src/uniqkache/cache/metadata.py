@@ -138,7 +138,7 @@ class LayerMetadata:
             [self._hit_count, torch.zeros(num_new, dtype=torch.long, device=self._device)]
         )
 
-    def note_attention(self, weights: torch.Tensor, step: int, threshold: float = 0.0) -> None:
+    def note_attention(self, weights: torch.Tensor, step: int, threshold: float = 1e-6) -> None:
         """Accumulate attention mass received by each cached token.
 
         Parameters

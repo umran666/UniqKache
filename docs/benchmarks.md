@@ -149,6 +149,19 @@ Policies: `full_cache`, `sliding_window`, `lru`, `attention_based`, `token_impor
 
 ## What is measured
 
+The `--attention-access-threshold` option (config field `attention_access_threshold`)
+defaults to `1e-6`. Reduced attention above this value refreshes recency; smaller
+probabilities still accumulate as attention mass. The threshold is recorded in
+`policy_config.cache_config`, saved in checkpoints, and preserved by capacity changes.
+Setting it to zero explicitly reproduces the old access behavior.
+
+`attention_proportional` allocation weights layers by the concentration
+`sum((cum_attention / sum(cum_attention)) ** 2)`. Focused distributions receive a
+larger share than diffuse distributions; total normalized mass alone is always one
+and cannot distinguish layers. The allocator preserves the total budget and minimum
+sink capacities, with uniform fallback for missing attention. This is a heuristic
+whose quality benefit requires an experiment, not a validated improvement.
+
 ### Memory
 
 | Field | Meaning |

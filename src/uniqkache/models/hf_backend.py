@@ -177,7 +177,7 @@ class UniqKacheLayer(_DynamicLayerBase):  # type: ignore[misc,valid-type]
         cap = self.get_max_length()
         kv_len = (
             min(cur_len + query_length, cap)
-            if cap is not None and cap > 0
+            if cap is not None and cap > 0 and self.kv_cache.auto_enforce
             else cur_len + query_length
         )
         return kv_len, 0
@@ -433,6 +433,34 @@ class HFBackend:
     # ------------------------------------------------------------------
 
     def forward(
+        self,
+        input_ids: torch.Tensor,
+        cache: KVCache | None = None,
+        *,
+        start_pos: int = 0,
+        return_attention: bool = False,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        if start_pos == 0:
+            self.reset()
+        if cache is None:
+            return self._forward_impl(
+                input_ids, start_pos=start_pos, return_attention=return_attention
+            )
+        with cache.defer_enforcement() as owner:
+            needs_attention = owner and cache.policy is not None and cache.policy.uses_attention
+            logits, weights = self._forward_impl(
+                input_ids,
+                cache,
+                start_pos=start_pos,
+                return_attention=return_attention or needs_attention,
+            )
+            if owner and weights is not None:
+                mode = "all_queries" if input_ids.shape[1] > 1 else "last_query"
+                for idx, attention in enumerate(weights):
+                    cache.note_attention(idx, attention, mode=mode)
+            return logits, weights if return_attention else None
+
+    def _forward_impl(
         self,
         input_ids: torch.Tensor,
         cache: KVCache | None = None,

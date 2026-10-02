@@ -196,10 +196,12 @@ def perplexity(
             for start in range(0, seq_len, chunk_size):
                 end = min(start + chunk_size, seq_len)
                 chunk = input_ids[:, start:end]
-                logits, weights = model.forward(
-                    chunk, cache=cache, start_pos=start, return_attention=record_attention
-                )
-                _absorb_attention(cache, weights, num_queries=end - start)
+                with cache.defer_enforcement():
+                    logits, weights = model.forward(
+                        chunk, cache=cache, start_pos=start, return_attention=record_attention
+                    )
+                    _absorb_attention(cache, weights, num_queries=end - start)
+                cache.advance()
                 vocab_size = logits.shape[-1]
 
                 # Logit at absolute position p predicts the token at p+1. So this
@@ -341,7 +343,13 @@ def needle_retrieval(
     with torch.no_grad():
         if cache is not None:
             cache.reset()
-            logits, _ = model.forward(context, cache=cache, start_pos=0)
+            record_attention = cache.policy is not None and cache.policy.uses_attention
+            with cache.defer_enforcement():
+                logits, weights = model.forward(
+                    context, cache=cache, start_pos=0, return_attention=record_attention
+                )
+                _absorb_attention(cache, weights, num_queries=context.shape[1])
+            cache.advance()
         else:
             logits, _ = model.forward(context)
 
@@ -351,7 +359,15 @@ def needle_retrieval(
         position = context.shape[1]
         for _ in range(needle_len - 1):
             if cache is not None:
-                step_logits, _ = model.forward(generated[-1], cache=cache, start_pos=position)
+                with cache.defer_enforcement():
+                    step_logits, weights = model.forward(
+                        generated[-1],
+                        cache=cache,
+                        start_pos=position,
+                        return_attention=record_attention,
+                    )
+                    _absorb_attention(cache, weights, num_queries=1)
+                cache.advance()
             else:
                 raise BackendError(
                     "needle_retrieval without a cache can only score a 1-token needle; "

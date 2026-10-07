@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +178,7 @@ def _make_cache(
 ) -> KVCache:
     """Construct a cache matching the spec, with the spec's policy."""
     config = built.cache_config_factory(capacity, spec.attention_sinks, dtype, device)
+    config = replace(config, attention_access_threshold=spec.attention_access_threshold)
     if capacity is None and spec.policy == "full_cache":
         # An unbounded cache needs no decisions, so no policy is required.
         return KVCache(config, policy=None)
@@ -296,6 +297,7 @@ def _warmup(
             keep_ratio=None,
             memory_budget_mb=None,  # capacity is already resolved for the warmup
             attention_sinks=min(spec.attention_sinks, warm_capacity - 1),
+            attention_access_threshold=spec.attention_access_threshold,
             precision=spec.precision,
             device=spec.device,
             seed=spec.seed,

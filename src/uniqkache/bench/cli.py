@@ -128,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model/storage precision: float32, float16 or bfloat16. Default: %(default)s",
     )
     parser.add_argument(
+        "--attention-access-threshold",
+        type=float,
+        default=1e-6,
+        help="Minimum reduced attention probability counted as a recency access.",
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help="'auto', 'cpu' or 'cuda'. Default: %(default)s",
@@ -255,6 +261,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         keep_ratio=args.keep_ratio,
         memory_budget_mb=args.memory_budget_mb,
         attention_sinks=args.attention_sinks,
+        attention_access_threshold=args.attention_access_threshold,
         precision=args.precision,
         device=args.device,
         seed=args.seed,

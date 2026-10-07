@@ -424,6 +424,7 @@ class KVCache:
             dtype=str(self.config.dtype),
             offloaded_layers=self._store.offloaded_layers(),
             utilization_per_layer=utilization_per_layer,
+            payload_bytes=sum(layer.payload_bytes() for layer in self._store.layers),
         )
 
     # ------------------------------------------------------------------

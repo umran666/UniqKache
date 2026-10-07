@@ -34,9 +34,10 @@ class TestCacheMemoryAccounting:
         stats = full_cache.stats()
 
         # 2 (k and v) * 2 kv heads * 10 tokens * 8 head_dim * 4 bytes
-        expected = 2 * NUM_KV_HEADS * 10 * HEAD_DIM * 4
+        expected = 2 * NUM_KV_HEADS * 64 * HEAD_DIM * 4
         assert stats.bytes_on_device == expected
         assert stats.bytes_total == expected
+        assert stats.payload_bytes == 2 * NUM_KV_HEADS * 10 * HEAD_DIM * 4
 
     def test_unbounded_cache_reports_no_utilization(self, full_cache, kv_factory):
         full_cache.append(0, kv_factory(4), kv_factory(4))
@@ -75,7 +76,8 @@ class TestCacheMemoryAccounting:
         for layer in range(NUM_LAYERS):
             full_cache.append(layer, kv_factory(12), kv_factory(12))
         predicted = theoretical_kv_bytes(full_cache.config, 12)
-        assert full_cache.stats().bytes_on_device == predicted
+        assert full_cache.stats().payload_bytes == predicted
+        assert full_cache.stats().bytes_on_device >= predicted
         assert full_cache.stats().total_tokens == 12 * NUM_LAYERS
 
     def test_snapshot_reports_none_for_unmeasurable_gpu_fields(self, full_cache, kv_factory):

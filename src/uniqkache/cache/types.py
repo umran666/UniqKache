@@ -229,6 +229,7 @@ class CacheStats:
     dtype: str
     offloaded_layers: list[int] = field(default_factory=list)
     utilization_per_layer: list[float] | None = None
+    payload_bytes: int = 0
 
     @property
     def memory_bytes(self) -> int:

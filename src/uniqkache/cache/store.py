@@ -25,8 +25,8 @@ Storage is preallocated using a contiguous buffer along the sequence dimension:
   during decode.
 * When ``capacity`` is None (unbounded cache), buffers grow via geometric
   doubling, amortising allocation costs to O(1) per token (O(T) total sequence time).
-* Eviction (:meth:`LayerStorage.keep`) gathers surviving tokens in-place at the
-  front of the buffer without reallocating, maintaining buffer capacity in steady state.
+* Eviction trims oversized buffers to the configured capacity (or surviving
+  occupancy when unbounded). An empty layer releases its backing buffers.
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ from uniqkache.cache.metadata import LayerMetadata
 from uniqkache.cache.types import CacheConfig
 from uniqkache.compression.base import CompressionResult
 from uniqkache.compression.quantize import QuantizedTensor
-from uniqkache.utils.device import tensor_bytes
 from uniqkache.utils.errors import CacheStateError
 from uniqkache.utils.logging import get_logger
 
@@ -191,16 +190,22 @@ class LayerStorage:
             return int(self._compressed.compressed_bytes)
         if self._keys_buf is None or self._values_buf is None:
             return 0
-        keys = self.keys
-        values = self.values
-        if keys is None or values is None:
-            return 0
-        return tensor_bytes(keys) + tensor_bytes(values)
+        return int(self._keys_buf.untyped_storage().nbytes()) + int(
+            self._values_buf.untyped_storage().nbytes()
+        )
+
+    def payload_bytes(self) -> int:
+        """Live K/V payload, excluding unused preallocated slots."""
+        if self._compressed is not None:
+            return int(self._compressed.compressed_bytes)
+        return self.uncompressed_bytes_after(self.num_tokens)
 
     def uncompressed_bytes(self) -> int:
         """Bytes this layer *would* occupy at the configured dtype."""
         if not self.is_initialized:
             return 0
+        if self._compressed is None:
+            return self.bytes()
         per_token = 2 * self.batch_size * self.num_kv_heads * self.head_dim
         element = torch.empty(0, dtype=self.dtype).element_size()
         return int(self.num_tokens * per_token * element)
@@ -380,6 +385,13 @@ class LayerStorage:
                 f"min={int(indices.min())}, max={int(indices.max())}"
             )
 
+        if indices.numel() == 0:
+            self._keys_buf = self._values_buf = None
+            self._compressed = None
+            self._offloaded = False
+            self.metadata.keep(indices)
+            return before
+
         if self._compressed is not None:
             payload_keys, payload_values = self._compressed.keys, self._compressed.values
             if not isinstance(payload_keys, QuantizedTensor) or not isinstance(
@@ -407,11 +419,15 @@ class LayerStorage:
                     f"layer {self.layer_idx} is marked initialised but holds no tensors"
                 )
             kept = int(indices.numel())
-            if kept > 0:
-                surviving_keys = self._keys_buf[:, :, indices, :].clone()
-                surviving_values = self._values_buf[:, :, indices, :].clone()
-                self._keys_buf[:, :, :kept, :] = surviving_keys
-                self._values_buf[:, :, :kept, :] = surviving_values
+            surviving_keys = self._keys_buf[:, :, indices, :].clone()
+            surviving_values = self._values_buf[:, :, indices, :].clone()
+            alloc_cap = max(kept, self.capacity or kept)
+            if self._keys_buf.shape[2] != alloc_cap:
+                shape = (self.batch_size, self.num_kv_heads, alloc_cap, self.head_dim)
+                self._keys_buf = torch.empty(shape, dtype=self.dtype, device=home_device)
+                self._values_buf = torch.empty(shape, dtype=self.dtype, device=home_device)
+            self._keys_buf[:, :, :kept, :] = surviving_keys
+            self._values_buf[:, :, :kept, :] = surviving_values
 
         self.metadata.keep(indices)
         return before - int(indices.numel())
@@ -539,6 +555,8 @@ class LayerStorage:
             }
         elif self.is_initialized:
             assert self._keys is not None and self._values is not None
+            assert self._keys_buf is not None
+            state["allocated_tokens"] = int(self._keys_buf.shape[2])
             state["keys"] = self._keys.clone()
             state["values"] = self._values.clone()
         return state
@@ -705,8 +723,14 @@ class LayerStorage:
                     f"layer {self.layer_idx} values dtype mismatch: {values.dtype} vs {config.dtype}"
                 )
 
-            self._keys = keys
-            self._values = values
+            allocated = state.get("allocated_tokens", int(keys.shape[2]))
+            if not isinstance(allocated, int) or allocated < keys.shape[2]:
+                raise CacheStateError("allocated_tokens must be an integer >= stored token count")
+            shape = (self.batch_size, self.num_kv_heads, allocated, self.head_dim)
+            self._keys_buf = torch.empty(shape, dtype=self.dtype, device=dev)
+            self._values_buf = torch.empty(shape, dtype=self.dtype, device=dev)
+            self._keys_buf[:, :, : keys.shape[2], :] = keys
+            self._values_buf[:, :, : values.shape[2], :] = values
             self._compressed = None
             self._offloaded = is_offloaded if target_device is None else dev != self.device
             seq_len = int(keys.shape[2])

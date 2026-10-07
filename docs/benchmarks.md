@@ -190,10 +190,20 @@ files using logical byte counts cannot establish physical resident memory saving
 | `tpot_ms` | Mean per-token decode time, synchronised per step. `null` when nothing was decoded. |
 | `prefill_ms` / `decode_ms` / `total_ms` | Phase breakdown. |
 | `latency_p50_ms` / `latency_p90_ms` | Percentiles over the per-step decode samples. |
-| `tokens_per_second` | Decode-phase throughput over **generated** tokens. Prefill is excluded so a long prompt cannot flatter the number. |
+| `tokens_per_second` | Tokens produced by decode forwards divided by decode wall time. The first generated token comes from prefill and is excluded. |
 
 `tpot_ms` is `null`, not `0`, when no decode step occurred. `0 ms/token` would read as
 infinitely fast rather than as "not measured".
+
+With zero requested new tokens, prefill still populates the cache, but no token is
+selected and TTFT, TPOT, and decode throughput are unmeasured. One generated token
+also has no decode throughput. Decode throughput therefore uses `generated_tokens - 1`.
+
+Model forwards retain new keys until causal attention and its bookkeeping complete,
+then enforce token capacity. This permits a temporary overshoot during a forward.
+New tokens receive an attention score before they compete for retention. Generation
+and both quality evaluators record attention at this same boundary. Perplexity advances
+recency once per chunk; retrieval advances it once for prefill and each continuation.
 
 ### Quality
 

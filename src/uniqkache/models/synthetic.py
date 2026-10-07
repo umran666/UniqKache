@@ -184,8 +184,8 @@ def apply_rope(
     positions = positions.to(device=x.device, dtype=torch.float32).reshape(-1)
     freqs = torch.outer(positions, inv_freq)  # [T, D/2]
     emb = torch.cat([freqs, freqs], dim=-1)  # [T, D]
-    cos = emb.cos()[None, None, :, :]
-    sin = emb.sin()[None, None, :, :]
+    cos = emb.cos().to(x.dtype)[None, None, :, :]
+    sin = emb.sin().to(x.dtype)[None, None, :, :]
     return x * cos + _rotate_half(x) * sin
 
 
@@ -439,6 +439,32 @@ class SyntheticCausalLM(nn.Module):
     # -- forward -----------------------------------------------------------
 
     def forward(
+        self,
+        input_ids: torch.Tensor,
+        cache: KVCache | None = None,
+        *,
+        start_pos: int = 0,
+        return_attention: bool = False,
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None]:
+        if cache is None:
+            return self._forward_impl(
+                input_ids, start_pos=start_pos, return_attention=return_attention
+            )
+        with cache.defer_enforcement() as owner:
+            needs_attention = owner and cache.policy is not None and cache.policy.uses_attention
+            logits, weights = self._forward_impl(
+                input_ids,
+                cache,
+                start_pos=start_pos,
+                return_attention=return_attention or needs_attention,
+            )
+            if owner and weights is not None:
+                mode = "all_queries" if input_ids.shape[1] > 1 else "last_query"
+                for idx, attention in enumerate(weights):
+                    cache.note_attention(idx, attention, mode=mode)
+            return logits, weights if return_attention else None
+
+    def _forward_impl(
         self,
         input_ids: torch.Tensor,
         cache: KVCache | None = None,

@@ -41,6 +41,8 @@ Example
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -106,6 +108,7 @@ class KVCache:
         self.policy = policy
         self.compressor: BaseCompressor = compressor or Int8KVCompressor()
         self.auto_enforce = auto_enforce
+        self._defer_depth = 0
 
         self._store = KVStore(config)
         self._step = 0
@@ -196,6 +199,27 @@ class KVCache:
         if keys is None or values is None:
             raise CacheStateError(f"layer {layer_idx} reports initialised but yields no tensors")
         return keys, values
+
+    @contextmanager
+    def defer_enforcement(self) -> Iterator[bool]:
+        """Keep current queries available until attention is recorded, then evict.
+
+        Nested callers share one boundary. The yielded flag identifies the
+        caller responsible for recording attention before the outer boundary.
+        """
+        owner = self._defer_depth == 0
+        previous = self.auto_enforce
+        self._defer_depth += 1
+        self.auto_enforce = False
+        succeeded = False
+        try:
+            yield owner
+            succeeded = True
+        finally:
+            self._defer_depth -= 1
+            self.auto_enforce = previous
+            if owner and previous and succeeded:
+                self.enforce_capacity()
 
     def evict(
         self,

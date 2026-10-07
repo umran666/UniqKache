@@ -897,7 +897,7 @@ class TestCustomPolicyWeightRegression:
         assert record.policy_config.get("policy", {}).get("weight") == 0.8
         assert "weight=0.8" in record.notes
 
-    def test_different_weights_produce_different_quality_values(self):
+    def test_different_weights_change_controlled_retention_decisions(self):
         from examples.custom_policy import RecencyAttentionPolicy
 
         from uniqkache.bench.config import ExperimentConfig
@@ -933,7 +933,26 @@ class TestCustomPolicyWeightRegression:
         assert rec1.policy_config["policy"]["weight"] == 1.0
         assert rec0.quality_value is not None
         assert rec1.quality_value is not None
-        assert rec0.quality_value != rec1.quality_value
+        assert torch.isfinite(torch.tensor([rec0.quality_value, rec1.quality_value])).all()
+
+        # Random-model perplexities can coincide. Opposing attention and recency
+        # signals pin the actual weight-dependent retention decision instead.
+        from uniqkache.bench.runner import _make_cache, build_model_for_spec
+
+        for spec, expected in ((spec_w0, [1, 2]), (spec_w1, [0, 1])):
+            spec = spec.with_overrides(capacity=2, attention_sinks=0)
+            built = build_model_for_spec(spec, torch.float32, "cpu")
+            cache = _make_cache(spec, built, capacity=2, dtype=torch.float32, device="cpu")
+            cache.auto_enforce = False
+            kv = torch.ones(1, built.config["num_kv_heads"], 3, built.config["head_dim"])
+            cache.append(0, kv, kv)
+            cache.note_attention(0, torch.tensor([[[[0.9, 0.05, 0.05]]]]))
+            cache.advance()
+            cache.note_access(0, torch.tensor([1]))
+            cache.advance()
+            cache.note_access(0, torch.tensor([2]))
+            cache.enforce_capacity(0)
+            assert cache.state(0).positions.tolist() == expected
 
     def test_custom_policy_cli_execution(self, monkeypatch):
         import sys

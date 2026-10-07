@@ -66,8 +66,7 @@ class LRUPolicy(BaseCachePolicy):
         last_access = state.last_access.to(_PACK_DTYPE)
         positions = state.positions.to(_PACK_DTYPE)
         span = float(positions.max().item()) + 1.0
-        packed = last_access * span + positions
-        return packed.to(torch.float32)
+        return last_access * span + positions
 
 
 __all__ = ["LRUPolicy"]

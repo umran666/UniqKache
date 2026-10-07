@@ -39,11 +39,15 @@ def rank_normalize(x: torch.Tensor) -> torch.Tensor:
     """
     if x.numel() == 0:
         return x.to(torch.float32)
-    x = x.to(torch.float32)
     if x.numel() == 1:
-        return torch.ones_like(x)
-    order = torch.argsort(torch.argsort(x))  # rank, ascending
-    return order.to(torch.float32) / (x.numel() - 1)
+        return torch.zeros_like(x, dtype=torch.float32)
+    _, inverse, counts = torch.unique(x, sorted=True, return_inverse=True, return_counts=True)
+    # Equal values share a midrank so the policy's stable slot tie-break survives.
+    starts = counts.cumsum(0) - counts
+    ranks = starts.to(torch.float32) + (counts.to(torch.float32) - 1) / 2
+    if counts.numel() == 1:
+        return torch.zeros_like(x, dtype=torch.float32)
+    return ranks[inverse] / (x.numel() - 1)
 
 
 def weighted_sum(

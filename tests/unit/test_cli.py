@@ -26,7 +26,7 @@ from uniqkache.bench.config import load_config
 from uniqkache.bench.runner import run_config
 from uniqkache.metrics.record import validate_record
 from uniqkache.metrics.report import load_records
-from uniqkache.utils.errors import BackendError, ConfigError
+from uniqkache.utils.errors import ConfigError
 
 # Small but comfortably above the largest swept capacity, so every sweep row
 # actually exercises its budget rather than degenerating into a full cache.
@@ -157,9 +157,9 @@ class TestMemoryBudgetFlag:
             ),
             encoding="utf-8",
         )
-        with pytest.raises(BackendError) as excinfo:
+        with pytest.raises(ConfigError) as excinfo:
             run_config(load_config(str(config_path)), output_dir=tmp_path)
-        assert "never evicts" in str(excinfo.value)
+        assert "unbounded reference" in str(excinfo.value)
 
     def test_budget_is_mutually_exclusive_with_capacity_and_ratio(self, tmp_path, capsys):
         # Two budget knobs is a configuration error: RunSpec raises ConfigError,

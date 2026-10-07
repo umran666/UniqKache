@@ -19,6 +19,7 @@ is visible in a single record rather than requiring a reader to join two tables.
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -82,6 +83,7 @@ class RunOutcome:
     generation: GenerationResult | None
     quality: QualityResult | None
     problems: list[str]
+    spec: RunSpec | None = None
 
     @property
     def ok(self) -> bool:
@@ -205,6 +207,9 @@ def _quality_reference(
     """
     key = (
         spec.model,
+        spec.model_revision,
+        json.dumps(built.config, sort_keys=True, default=str),
+        str(device),
         spec.seed,
         int(prompt.shape[0]),
         int(prompt.shape[1]),
@@ -236,7 +241,7 @@ def _quality_reference(
         result = perplexity(
             built.model, prompt, cache=unbounded, chunk_size=spec.quality_chunk_size, device=device
         )
-    if result.value is not None:
+    if result.value is not None and math.isfinite(result.value):
         memo[key] = result.value
     return result.value
 
@@ -477,6 +482,7 @@ def _run_single_spec(
         quality_metric=quality.metric if quality else None,
         quality_value=quality.value if quality else None,
         quality_reference=reference,
+        quality_details=(quality.details or {}) if quality else {},
         repetitions=spec.repetitions,
         seeds=[spec.seed],
         seed=spec.seed,
@@ -515,7 +521,9 @@ def _run_single_spec(
     for problem in problems:
         _log.warning("record integrity: %s: %s", run_id, problem)
 
-    return RunOutcome(record=record, generation=generation, quality=quality, problems=problems)
+    return RunOutcome(
+        record=record, generation=generation, quality=quality, problems=problems, spec=spec
+    )
 
 
 def run_spec(
@@ -658,7 +666,7 @@ def run_spec(
         vals: list[float] = []
         for o in rep_outcomes:
             v = getattr(o.record, field_name, None)
-            if v is not None:
+            if v is not None and math.isfinite(v):
                 vals.append(float(v))
         if vals:
             mean = sum(vals) / len(vals)
@@ -678,7 +686,7 @@ def run_spec(
     q_deltas: list[float] = []
     for o in rep_outcomes:
         qd = o.record.quality_delta
-        if qd is not None:
+        if qd is not None and math.isfinite(qd):
             q_deltas.append(float(qd))
     if q_deltas:
         mean = sum(q_deltas) / len(q_deltas)
@@ -767,6 +775,7 @@ def run_spec(
         if "tokens_per_second" in aggregates
         else None,
         quality_metric=base_record.quality_metric,
+        quality_details={"repetitions": [o.record.quality_details for o in rep_outcomes]},
         quality_value=aggregates["quality_value"].mean if "quality_value" in aggregates else None,
         quality_reference=aggregates["quality_reference"].mean
         if "quality_reference" in aggregates
@@ -795,6 +804,7 @@ def run_spec(
         generation=rep_outcomes[-1].generation,
         quality=rep_outcomes[-1].quality,
         problems=all_problems,
+        spec=spec,
     )
 
 
@@ -863,7 +873,7 @@ def write_results(
     output_dir: str | Path,
     name: str,
 ) -> dict[str, Path]:
-    """Write records as JSONL and CSV, plus the resolved config.
+    """Write JSONL/CSV records, a replayable source config, and diagnostics.
 
     Both formats are written because they serve different readers: JSONL keeps
     full nested fidelity for analysis, CSV is what a spreadsheet or a plot
@@ -871,6 +881,8 @@ def write_results(
 
     Allocates a unique output basename and avoids overwriting earlier experiments
     with the same name in the same second, including concurrent writers.
+    Manually constructed outcomes must supply ``spec``; guessing missing source
+    parameters from result records would fabricate experiment provenance.
     """
     from uniqkache.metrics.report import records_to_csv
 
@@ -879,6 +891,8 @@ def write_results(
     stamp = time.strftime("%Y%m%d-%H%M%S")
 
     records = [outcome.record for outcome in outcomes]
+    if not outcomes or any(outcome.spec is None for outcome in outcomes):
+        raise ConfigError("write_results requires the source RunSpec for every outcome")
 
     counter = 0
     while True:
@@ -890,9 +904,10 @@ def write_results(
         jsonl_path = output_dir / f"{base}.jsonl"
         csv_path = output_dir / f"{base}.csv"
         config_path = output_dir / f"{base}.config.json"
+        diagnostics_path = output_dir / f"{base}.diagnostics.json"
 
         # Check if any artifact for this candidate basename already exists on disk
-        if jsonl_path.exists() or csv_path.exists() or config_path.exists():
+        if any(p.exists() for p in (jsonl_path, csv_path, config_path, diagnostics_path)):
             counter += 1
             continue
 
@@ -913,7 +928,7 @@ def write_results(
         try:
             with handle:
                 for record in records:
-                    handle.write(json.dumps(record.to_dict(), default=str) + "\n")
+                    handle.write(json.dumps(record.to_dict(), default=str, allow_nan=False) + "\n")
 
             records_to_csv(records, csv_path, mode="x")
             created.append(csv_path)
@@ -924,16 +939,29 @@ def write_results(
                     json.dumps(
                         {
                             "name": name,
-                            "runs": [record.to_dict() for record in records],
-                            "problems": {
-                                o.record.run_id: o.problems for o in outcomes if o.problems
-                            },
+                            "runs": [o.spec.to_dict() for o in outcomes if o.spec is not None],
                         },
                         indent=2,
                         default=str,
+                        allow_nan=False,
                     )
                     # json.dumps does not end with a newline, and a text file without one
                     # shows up as "\ No newline at end of file" in every diff.
+                    + "\n"
+                )
+            with diagnostics_path.open("x", encoding="utf-8", newline="\n") as diag_handle:
+                created.append(diagnostics_path)
+                diag_handle.write(
+                    json.dumps(
+                        {
+                            "problems": {
+                                o.record.run_id: o.problems or validate_record(o.record)
+                                for o in outcomes
+                            }
+                        },
+                        indent=2,
+                        allow_nan=False,
+                    )
                     + "\n"
                 )
             break
@@ -947,7 +975,12 @@ def write_results(
                 p.unlink(missing_ok=True)
             raise
 
-    return {"jsonl": jsonl_path, "csv": csv_path, "config": config_path}
+    return {
+        "jsonl": jsonl_path,
+        "csv": csv_path,
+        "config": config_path,
+        "diagnostics": diagnostics_path,
+    }
 
 
 __all__ = [

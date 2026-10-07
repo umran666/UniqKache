@@ -41,6 +41,7 @@ class LayerMetadata:
             raise CacheStateError(f"num_sinks must be >= 0, got {num_sinks}")
         self._num_sinks = num_sinks
         self._device = torch.device(device)
+        self._next_position = 0
 
         self._positions = torch.empty(0, dtype=torch.long, device=self._device)
         self._last_access = torch.empty(0, dtype=torch.long, device=self._device)
@@ -111,7 +112,7 @@ class LayerMetadata:
             return
 
         if positions is None:
-            start = int(self._positions[-1].item()) + 1 if self.num_tokens else 0
+            start = self._next_position
             new_positions = torch.arange(
                 start, start + num_new, dtype=torch.long, device=self._device
             )
@@ -122,6 +123,7 @@ class LayerMetadata:
                     f"positions has {new_positions.shape[0]} entries but num_new={num_new}"
                 )
 
+        self._next_position = max(self._next_position, int(new_positions.max().item()) + 1)
         self._positions = torch.cat([self._positions, new_positions])
         self._last_access = torch.cat(
             [
@@ -204,6 +206,7 @@ class LayerMetadata:
 
     def clear(self) -> None:
         """Drop all tokens, preserving configuration."""
+        self._next_position = 0
         self._positions = torch.empty(0, dtype=torch.long, device=self._device)
         self._last_access = torch.empty(0, dtype=torch.long, device=self._device)
         self._cum_attention = torch.empty(0, dtype=torch.float32, device=self._device)
@@ -223,6 +226,7 @@ class LayerMetadata:
         """Serialisable dictionary of metadata signals."""
         return {
             "num_sinks": self._num_sinks,
+            "next_position": self._next_position,
             "positions": self._positions.clone(),
             "last_access": self._last_access.clone(),
             "cum_attention": self._cum_attention.clone(),
@@ -278,6 +282,9 @@ class LayerMetadata:
 
         self._num_sinks = state.get("num_sinks", self._num_sinks)
         self._positions = positions
+        self._next_position = max(
+            int(state.get("next_position", 0)), int(positions.max().item()) + 1 if num else 0
+        )
         self._last_access = last_access
         self._cum_attention = cum_attention
         self._hit_count = hit_count

@@ -11,6 +11,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from uniqkache.bench.config import RunSpec
+from uniqkache.bench.runner import run_spec
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.store import KVStore
 from uniqkache.cache.types import CacheConfig
@@ -23,7 +25,7 @@ from uniqkache.prefetch import (
     build_prefetch_policy,
 )
 from uniqkache.utils.device import cuda_is_available
-from uniqkache.utils.errors import UniqKacheError
+from uniqkache.utils.errors import ConfigError, UniqKacheError
 
 requires_cuda = pytest.mark.skipif(not cuda_is_available(), reason="requires a CUDA device")
 
@@ -240,3 +242,84 @@ class TestPrefetchPolicies:
     def test_builder_rejects_unknown_name(self):
         with pytest.raises(UniqKacheError, match="unknown prefetch policy"):
             build_prefetch_policy("does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# Runner wiring (issue #8): the benchmark can finally exercise the tiers
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerTierWiring:
+    """`RunSpec`'s tier knobs must reach the tiers and be recorded honestly."""
+
+    @staticmethod
+    def _spec(**kwargs) -> RunSpec:
+        base = {
+            "model": "synthetic:tiny",
+            "policy": "full_cache",
+            "context_length": 32,
+            "max_new_tokens": 2,
+            "measure_quality": False,
+        }
+        base.update(kwargs)
+        return RunSpec(**base)
+
+    def test_unknown_prefetch_policy_is_a_configuration_error(self):
+        with pytest.raises(ConfigError, match="unknown prefetch_policy"):
+            self._spec(prefetch_policy="does_not_exist")
+
+    def test_non_positive_device_budget_is_a_configuration_error(self):
+        with pytest.raises(ConfigError, match="device_budget_mb must be > 0"):
+            self._spec(device_budget_mb=0.0)
+
+    def test_device_budget_on_cpu_is_a_documented_no_op(self):
+        """A single-tier run must succeed *and* say the offload never happened.
+
+        TierManager refuses to plan without a cheaper tier, which is correct:
+        the alternative — recording a successful offload that moved nothing —
+        would inflate a memory-saving claim. The refusal is written to the
+        record so the run cannot be read as evidence bytes were moved.
+        """
+        outcome = run_spec(self._spec(device_budget_mb=0.001))
+
+        offload = outcome.record.policy_config["tier_actions"]["offload"]
+        assert offload["applied"] is False
+        assert offload["layers_moved"] == 0
+        assert "no cheaper tier" in offload["reason"]
+        assert outcome.record.cache_bytes_offloaded == 0
+        assert "single-tier" in outcome.record.notes
+
+    def test_prefetch_policy_is_applied_and_recorded(self):
+        """Nothing is offloaded on CPU, so the plan is empty — and says so."""
+        outcome = run_spec(self._spec(prefetch_policy="next_layer"))
+
+        prefetch = outcome.record.policy_config["tier_actions"]["prefetch"]
+        assert prefetch["name"] == "next_layer"
+        assert prefetch["layers"] == []
+        assert prefetch["layers_moved"] == 0
+        assert outcome.record.cache_bytes_offloaded == 0
+
+    def test_full_cache_may_use_a_device_budget(self):
+        """Offloading moves bytes without discarding tokens, so even the
+        unbounded reference may plan it — the one budget `full_cache` accepts."""
+        outcome = run_spec(self._spec(device_budget_mb=0.001))
+        assert outcome.record.policy == "full_cache"
+        assert outcome.record.capacity is None
+
+    @requires_cuda
+    def test_device_budget_offloads_bytes_on_cuda(self):
+        budget_mb = 0.13
+        outcome = run_spec(
+            self._spec(device="cuda", device_budget_mb=budget_mb, prefetch_policy="next_layer")
+        )
+        stats = outcome.generation.cache_stats
+        budget = int(budget_mb * 1024 * 1024)
+
+        offload = outcome.record.policy_config["tier_actions"]["offload"]
+        assert offload["applied"] is True
+        assert offload["layers_moved"] > 0
+        # The record must show the post-offload split, not the pre-offload one.
+        assert stats["bytes_offloaded"] > 0
+        assert stats["bytes_on_device"] <= budget
+        # Offloading relocates bytes; it does not delete them.
+        assert stats["bytes_total"] == stats["bytes_on_device"] + stats["bytes_offloaded"]

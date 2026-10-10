@@ -17,6 +17,20 @@ Two project-specific conventions:
 
 ### Added
 
+- **Offload and prefetch are reachable from a benchmark run (issue #8).** `offload/tiers.py`,
+  `prefetch/sequential.py` and `prefetch/recency.py` were implemented and unit-tested but
+  nothing in `bench/` referenced them, so no experiment could observe them. `RunSpec` gained
+  `device_budget_mb` (a device-resident byte ceiling for offload planning — a *tier* budget,
+  not a token budget, so it is valid even with `full_cache`) and `prefetch_policy`
+  (`none` / `next_layer` / `recency`); the CLI gained `--device-budget-mb` and
+  `--prefetch-policy`. The plan and its outcome are recorded in
+  `policy_config.tier_actions`. The actions run after the decode loop — the runtime computes
+  a whole layer inside one forward pass, so there is no per-layer cursor to hook — so the
+  recorded latency columns say nothing about transfer cost, and `docs/benchmarks.md` says so.
+  On a single-tier (CPU) device the offload is a *recorded* no-op: `TierManager` refuses to
+  plan, and the record carries the refusal. Open Question 5 remains unanswered on hardware
+  without a second tier; see `docs/research.md`, F15, and the declared
+  `experiments/configs/offload_prefetch.json`.
 - Repository scaffolding: packaging (`pyproject.toml`), `Makefile`, pre-commit hooks, Apache-2.0
   licence, security policy, code of conduct, citation metadata.
 - `uniqkache.cache` — policy-agnostic K/V storage with a `KVCache` facade exposing
@@ -146,6 +160,12 @@ fix — are covered by the checks they name instead.
   Token accounting was unaffected; `evicted_tokens` was always correct. `evict()` now counts an
   eviction only when `dropped > 0`, matching `enforce_capacity`, with a regression test pinning
   the agreement between the two paths.
+- **`TierManager.plan_offload` counted a layer's total bytes as the device saving.** A layer
+  that is already split (partially offloaded) frees only its resident share, so the plan
+  over-reported `device_saving` and could call an infeasible plan feasible. It now computes
+  the saving from `LayerStorage.device_bytes()`, and `KVStore.bytes_on_device()` /
+  `bytes_offloaded()` read the same per-tier accounting so the split is exact by
+  construction.
 
 ### Results
 

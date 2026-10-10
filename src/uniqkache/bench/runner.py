@@ -47,10 +47,12 @@ from uniqkache.metrics.record import (
     validate_record,
 )
 from uniqkache.models.synthetic import build_model, get_preset
+from uniqkache.offload.tiers import TierManager
 from uniqkache.policies import build_policy
+from uniqkache.prefetch.registry import build_prefetch_policy
 from uniqkache.runtime.generation import GenerationConfig, GenerationEngine, GenerationResult
 from uniqkache.utils.device import describe_hardware, resolve_device
-from uniqkache.utils.errors import BackendError, ConfigError
+from uniqkache.utils.errors import BackendError, ConfigError, UniqKacheError
 from uniqkache.utils.logging import get_logger
 from uniqkache.utils.seed import set_seed
 
@@ -186,6 +188,66 @@ def _make_cache(
         return KVCache(config, policy=None)
     policy = build_policy(spec.policy, **spec.policy_kwargs)
     return KVCache(config, policy=policy)
+
+
+def _apply_tier_actions(spec: RunSpec, cache: KVCache, device: str) -> dict[str, Any]:
+    """Apply the spec's prefetch policy and offload plan to ``cache``.
+
+    This is the benchmark-side wiring that makes the offload and prefetch
+    layers reachable from a run: ``offload/tiers.py`` and ``prefetch/`` were
+    implemented and unit-tested, but nothing in ``bench/`` referenced them, so
+    no experiment could observe them.
+
+    The order mirrors serving: shed device bytes down to the tier budget, then
+    bring back what the next layer will need. It runs *after* the decode loop
+    because the runtime executes a layer's compute inside one model forward
+    pass, so there is no per-layer cursor to hook between layers; the transfer
+    cost is therefore **not** overlapped with compute here, and the recorded
+    latency columns say nothing about offload speed.
+
+    Returns a record-friendly description of what happened. On a single-tier
+    device (CPU) :class:`TierManager` correctly refuses to construct, and that
+    refusal is recorded as the offload's outcome — a documented no-op, not a
+    silent skip and not a fake success.
+    """
+    info: dict[str, Any] = {}
+
+    if spec.device_budget_mb is not None:
+        budget = int(spec.device_budget_mb * 1024 * 1024)
+        try:
+            manager = TierManager(device=device, host="cpu")
+        except UniqKacheError as exc:
+            # A single-tier device has no cheaper tier to offload to. The
+            # refusal is recorded rather than skipped, so the record cannot
+            # claim an offload that never happened.
+            info["offload"] = {
+                "requested_budget_bytes": budget,
+                "layers_moved": 0,
+                "applied": False,
+                "reason": str(exc),
+            }
+            manager = None
+        if manager is not None:
+            plan = manager.plan_offload(cache.store, budget)
+            moved = sum(cache.offload(idx, target="cpu") for idx in plan.layers)
+            info["offload"] = {
+                "requested_budget_bytes": budget,
+                "layers_moved": moved,
+                "applied": True,
+                **plan.to_dict(),
+            }
+
+    if spec.prefetch_policy is not None:
+        policy = build_prefetch_policy(spec.prefetch_policy)
+        prefetch_plan = policy.plan(cache.store, cursor=0, resident_budget=None)
+        moved = sum(cache.prefetch(idx) for idx in prefetch_plan.layers)
+        info["prefetch"] = {
+            "name": spec.prefetch_policy,
+            "layers_moved": moved,
+            **prefetch_plan.to_dict(),
+        }
+
+    return info
 
 
 def _quality_reference(
@@ -383,6 +445,16 @@ def _run_single_spec(
             )
         generation.cache_stats = gen_cache.stats().to_dict()
 
+    # ---- memory tiers ---------------------------------------------------
+    # Offload planning and prefetch run after decode: the runtime computes a
+    # whole layer inside one model forward pass, so there is no per-layer
+    # cursor to hook between layers. The record therefore reports the
+    # post-offload byte split, and its latency columns say nothing about
+    # transfer cost (see docs/benchmarks.md and docs/research.md F15).
+    tier_actions = _apply_tier_actions(spec, gen_cache, device)
+    if tier_actions:
+        generation.cache_stats = gen_cache.stats().to_dict()
+
     # ---- quality ---------------------------------------------------------
     quality: QualityResult | None = None
     reference: float | None = None
@@ -428,6 +500,26 @@ def _run_single_spec(
     hardware = describe_hardware(resolve_device(device))
     cache_stats = generation.cache_stats
 
+    notes = spec.notes
+    if built.is_hf_backend:
+        # The HF backend mirrors K/V into the UniqKache cache in addition to the
+        # model's own DynamicCache, so its memory figures overstate the cache's
+        # footprint. The adapter's docstring promises records carry that caveat;
+        # append it rather than overwrite any notes the spec author wrote.
+        notes = (
+            (notes + " " if notes else "")
+            + "memory figures include the HF backend's K/V mirror; see "
+            "uniqkache.models.hf_backend's docstring"
+        )
+    if tier_actions.get("offload", {}).get("applied") is False:
+        # A single-tier run records the refusal as the offload's outcome, so a
+        # reader cannot mistake "budget requested" for "bytes moved".
+        notes = (
+            (notes + " " if notes else "")
+            + "offload requested on a single-tier device (no cheaper tier to move "
+            "bytes to); see policy_config.tier_actions"
+        )
+
     record = BenchmarkRecord(
         run_id=run_id,
         schema_version=SCHEMA_VERSION,
@@ -452,7 +544,10 @@ def _run_single_spec(
         batch_size=spec.batch_size,
         precision=spec.precision,
         policy=spec.policy,
-        policy_config=_policy_config(gen_cache),
+        policy_config={
+            **_policy_config(gen_cache),
+            **({"tier_actions": tier_actions} if tier_actions else {}),
+        },
         capacity=gen_cache.capacity,
         capacity_schedule=spec.capacity_schedule,
         attention_sinks=spec.attention_sinks,
@@ -503,17 +598,9 @@ def _run_single_spec(
             "quality_is_interpretable": quality.is_interpretable if quality else None,
             "quality_caveat": quality.caveat if quality else None,
         },
-        # The HF backend mirrors K/V into the UniqKache cache in addition to the
-        # model's own DynamicCache, so its memory figures overstate the cache's
-        # footprint. The adapter's docstring promises records carry that caveat;
-        # append it rather than overwrite any notes the spec author wrote.
-        notes=(
-            (spec.notes + " " if spec.notes else "")
-            + "memory figures include the HF backend's K/V mirror; see "
-            "uniqkache.models.hf_backend's docstring"
-        )
-        if built.is_hf_backend
-        else spec.notes,
+        # The HF backend's mirror caveat and any single-tier offload refusal are
+        # appended above, never overwriting what the spec author wrote.
+        notes=notes,
         status="research prototype" if spec.policy in {"adaptive"} else "experimental",
     )
 

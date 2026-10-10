@@ -78,7 +78,7 @@ notes are in [baselines/README.md](../baselines/README.md).
 | Method | Source | Reproduced as | Fidelity |
 | --- | --- | --- | --- |
 | PagedAttention / vLLM | Kwon et al., *Efficient Memory Management for Large Language Model Serving with PagedAttention*, SOSP 2023 (arXiv:2309.06180) | Not yet | UniqKache's store is contiguous, not paged. This is a known gap, and the reason `append` is O(T). |
-| FlexGen offloading | Sheng et al., *FlexGen: High-Throughput Generative Inference of LLMs with a Single GPU*, ICML 2023 (arXiv:2303.06865) | `offload.TierManager` (planning only) | Plans and accounts for tier movement; does **not** perform a real transfer or overlap it with compute. |
+| FlexGen offloading | Sheng et al., *FlexGen: High-Throughput Generative Inference of LLMs with a Single GPU*, ICML 2023 (arXiv:2303.06865) | `offload.TierManager` + the runner's `--device-budget-mb` / `--prefetch-policy` wiring | Plans, accounts for, and **performs** tier movement; the transfer runs after decode, so it is not overlapped with compute, and no bandwidth-dependent latency claim is made. |
 
 ### Architecture context
 
@@ -119,6 +119,7 @@ produced by an ad-hoc command whose arguments are lost.
 | --- | --- | --- |
 | `experiments/configs/correctness.json` | Non-evicting budget must reproduce full cache exactly | Runs; passes |
 | `experiments/configs/sweep_policies.json` | Cross-policy comparison at a fixed 25% budget | Runs |
+| `experiments/configs/offload_prefetch.json` | Offload to a device byte ceiling, then prefetch the next layer (Open Question 5) | Declared; blocked on CUDA hardware (F15) |
 | `--sweep` (CLI) | Retention sweep at 100/75/50/25/10% | Runs |
 
 Measurement protocol, applied uniformly:
@@ -617,6 +618,31 @@ what `experiments/results/README.md` asks for before replacing a file.
 **What this does not affect:** the bounded rows, the memory-scaling conclusion, and every
 quality value. All are unchanged.
 
+### F15 — The offload/prefetch measurement could not be answered on the development hardware
+
+**Expected:** answer Open Question 5 ("when is offloading worth it?") by measuring a real
+transfer against the recompute cost for the same tokens, with a measured interconnect
+bandwidth.
+
+**Observed:** the question is not answerable on the machine this was developed on. There is no
+CUDA device, so no second memory tier exists, and `Tier.bandwidth_gbps` is deliberately `None`
+rather than a guessed PCIe constant — inventing one would manufacture a hardware comparison
+nobody measured. The wiring itself (issue #8) is verified on CPU, where the honest outcome is
+that `TierManager` refuses to plan and the record says so: `cache_bytes_offloaded` stays `0`
+and `policy_config.tier_actions.offload.applied` is `false`. The run succeeds; it just cannot
+claim bytes moved.
+
+**Fix:** `--device-budget-mb` / `--prefetch-policy` and the runner-side application are in,
+with the single-tier behaviour pinned by `tests/unit/test_offload_prefetch.py::TestRunnerTierWiring`
+(a documented no-op, not a silent failure). The experiment is declared at
+`experiments/configs/offload_prefetch.json` so it is re-runnable, unchanged, on a machine with
+a real tier. Until someone runs it there and writes the result up, H8 stays untested.
+
+**Lesson:** an experiment that needs hardware you do not have should be *declared and
+recorded as blocked*, not approximated. The tempting move is to assume a bandwidth, report a
+smooth latency curve, and let the assumption quietly become the finding. That is the F10
+failure mode again, one level more expensive to detect.
+
 ---
 
 ## Open Questions
@@ -637,7 +663,9 @@ quality value. All are unchanged.
    real-model experiment.
 5. **When is offloading worth it?** H8 is untested. It needs a real transfer tier with a
    *measured* bandwidth — not an assumed one. `Tier.bandwidth_gbps` deliberately defaults to
-   `None` rather than guessing a PCIe number.
+   `None` rather than guessing a PCIe number. The runner can now plan and apply offload and
+   prefetch (`--device-budget-mb`, `--prefetch-policy`; `experiments/configs/offload_prefetch.json`),
+   but the measurement is blocked on hardware: see F15.
 6. **Does pressure-aware weighting help, or is a fixed weight enough?** H7 is untested. If
    `adaptive` does not beat the best fixed-weight `token_importance` configuration at equal
    budget, the adaptive machinery is unjustified complexity, and the honest move is to say so.

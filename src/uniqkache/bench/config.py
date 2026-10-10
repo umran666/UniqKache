@@ -67,6 +67,20 @@ class RunSpec:
         Explicit per-layer token budget, overriding ``keep_ratio``.
     attention_sinks:
         Leading tokens protected from eviction.
+    device_budget_mb:
+        Ceiling on device-resident cache bytes, in MiB, used for offload
+        planning (and, when a controller is configured, for its memory
+        constraint). This is a *tier* budget, not a token budget: it does not
+        set ``capacity`` and may be combined with any of the token-budget
+        fields. Offloading only moves bytes, so it is available to
+        ``full_cache`` too — the one budget that reduces device footprint
+        without discarding tokens.
+    prefetch_policy:
+        Registered prefetch policy name (``none``, ``next_layer``,
+        ``recency``). Applied after offload planning, mirroring serving order:
+        shed to the tier budget, then bring back what the next layer needs.
+        ``None`` means no prefetch, which is the correct default until a
+        measurement shows it pays for itself.
     """
 
     model: str = "synthetic:tiny"
@@ -82,6 +96,8 @@ class RunSpec:
     capacity: int | None = None
     keep_ratio: float | None = None
     memory_budget_mb: float | None = None
+    device_budget_mb: float | None = None
+    prefetch_policy: str | None = None
     attention_sinks: int = 0
     attention_access_threshold: float = 1e-6
     precision: str = "float32"
@@ -129,6 +145,16 @@ class RunSpec:
             raise ConfigError(f"capacity must be >= 1, got {self.capacity}")
         if self.memory_budget_mb is not None and self.memory_budget_mb <= 0:
             raise ConfigError(f"memory_budget_mb must be > 0, got {self.memory_budget_mb}")
+        if self.device_budget_mb is not None and self.device_budget_mb <= 0:
+            raise ConfigError(f"device_budget_mb must be > 0, got {self.device_budget_mb}")
+        if self.prefetch_policy is not None:
+            from uniqkache.prefetch.registry import available_prefetch_policies
+
+            if self.prefetch_policy not in available_prefetch_policies():
+                raise ConfigError(
+                    f"unknown prefetch_policy {self.prefetch_policy!r}. "
+                    f"Available: {', '.join(available_prefetch_policies())}"
+                )
         if self.attention_sinks < 0:
             raise ConfigError(f"attention_sinks must be >= 0, got {self.attention_sinks}")
         if self.batch_size < 1:

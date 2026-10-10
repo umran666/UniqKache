@@ -194,6 +194,23 @@ class LayerStorage:
             self._values_buf.untyped_storage().nbytes()
         )
 
+    def device_bytes(self) -> int:
+        """Bytes of this layer resident on the cache's home (compute) device.
+
+        Zero for a whole-layer offload. Reported separately from :meth:`bytes`
+        so that offloading cannot be mistaken for a memory reduction — the
+        bytes still exist, elsewhere.
+        """
+        if self._offloaded:
+            return 0
+        return self.bytes()
+
+    def offloaded_bytes(self) -> int:
+        """Bytes of this layer held on a non-home tier, or 0 when resident."""
+        if self._offloaded:
+            return self.bytes()
+        return 0
+
     def payload_bytes(self) -> int:
         """Live K/V payload, excluding unused preallocated slots."""
         if self._compressed is not None:
@@ -825,11 +842,11 @@ class KVStore:
 
     def bytes_on_device(self) -> int:
         """Resident bytes that are *not* offloaded."""
-        return sum(layer.bytes() for layer in self._layers if not layer.is_offloaded)
+        return sum(layer.device_bytes() for layer in self._layers)
 
     def bytes_offloaded(self) -> int:
         """Bytes held on a non-home device (typically CPU RAM)."""
-        return sum(layer.bytes() for layer in self._layers if layer.is_offloaded)
+        return sum(layer.offloaded_bytes() for layer in self._layers)
 
     def bytes_total(self) -> int:
         return self.bytes_on_device() + self.bytes_offloaded()

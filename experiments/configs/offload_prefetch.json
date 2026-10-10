@@ -1,0 +1,30 @@
+{
+  "name": "offload-prefetch-declared",
+  "description": "Declared experiment for Open Question 5 (when is offloading worth it?). The runner wiring is CPU-verified as a documented no-op (tests/unit/test_offload_prefetch.py), but answering the question needs a real second memory tier and a measured interconnect bandwidth, neither of which exists on the development hardware: no CUDA device, and Tier.bandwidth_gbps deliberately stays None rather than assuming a PCIe constant. Run this on a CUDA machine that can measure its own interconnect, then write the result up under Results or Failed Experiments in docs/research.md (see F15).",
+  "runs": [
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 512,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reference: no offload, no prefetch, all bytes device-resident"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 512,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "device_budget_mb": 0.25,
+      "prefetch_policy": "next_layer",
+      "notes": "offload to a 0.25 MiB device ceiling, then prefetch the next layer. On a single-tier (CPU) device this is a recorded no-op; the measurement this config exists for requires CUDA."
+    }
+  ]
+}

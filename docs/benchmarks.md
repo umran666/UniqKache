@@ -99,6 +99,8 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--needle-depth` | `0.5` | Needle position as a fraction of the haystack, in `[0, 1]`. |
 | `--offline` | off | HF models only: resolve the model strictly from the local cache, never the network. The record states which mode was used (`model_loaded_offline`). |
 | `--memory-budget-mb` | — | KV budget in MiB, converted to a token capacity via `tokens_for_bytes` (floored, so the budget is never exceeded). Mutually exclusive with `--capacity` and `--keep-ratio`; both the requested budget and the derived capacity are recorded. |
+| `--device-budget-mb` | — | Ceiling on **device-resident** cache bytes, in MiB, for offload planning. Unlike `--memory-budget-mb` it does not set the token capacity: offloading moves bytes to the host tier without discarding tokens, so it is also valid with `--policy full_cache`. The plan and its outcome are recorded in `policy_config.tier_actions`. |
+| `--prefetch-policy` | off | `none`, `next_layer` or `recency`. Applied after offload planning, in serving order: shed to the tier budget, then bring back what the next layer needs. |
 | `--output-dir` | `experiments/results` | Where results go. |
 | `--config` | — | Run an experiment config instead of a single ad-hoc run. |
 | `--sweep` | off | Expand into the 100/75/50/25/10 % retention sweep. |
@@ -178,6 +180,27 @@ whose quality benefit requires an experiment, not a validated improvement.
 **`cache_bytes_on_device` and `cache_bytes_offloaded` are separate on purpose.** Reporting a
 single "memory saved" number would let an offload, which frees nothing and costs bandwidth,
 look identical to an eviction, which actually destroys information.
+
+### Memory tiers
+
+`--device-budget-mb` and `--prefetch-policy` wire the tier machinery (`offload/tiers.py`,
+`prefetch/`) into a run. Two properties of that wiring matter when reading the record:
+
+- **The actions run after the decode loop.** The runtime computes a whole layer inside one
+  model forward pass, so there is no per-layer cursor to hook between layers. The transfer is
+  therefore **not** overlapped with compute, and the record's latency columns say nothing
+  about offload speed. A latency claim needs a measured interconnect bandwidth;
+  `Tier.bandwidth_gbps` stays `None` rather than assuming a PCIe constant (see
+  `docs/research.md`, F15).
+- **On a single-tier device (CPU) the offload is a recorded no-op.** `TierManager` refuses to
+  plan without a cheaper tier; the run still succeeds, `cache_bytes_offloaded` stays `0`, and
+  `policy_config.tier_actions.offload` carries the refusal, so a reader cannot mistake
+  "budget requested" for "bytes moved".
+
+Whatever happened is in `policy_config.tier_actions`: the requested byte budget, the plan
+(`layers`, `device_bytes_before`/`after`, `feasible`, `reason`), and the layers that actually
+moved. Whether offloading is *worth* it — Open Question 5 — is not answered by this wiring and
+is not claimed to be.
 
 The logical, uncompressed payload identity (the historical R3 figures used this accounting):
 

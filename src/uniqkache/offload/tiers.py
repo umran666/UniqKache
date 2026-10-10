@@ -192,7 +192,9 @@ class TierManager:
             if remaining <= byte_budget:
                 break
             chosen.append(layer.layer_idx)
-            remaining -= layer.bytes()
+            # Only the device-resident share leaves the device: a layer that is
+            # already split frees less than its total bytes.
+            remaining -= layer.device_bytes()
 
         feasible = remaining <= byte_budget
         reason = (

@@ -38,6 +38,7 @@ from uniqkache.bench.config import ExperimentConfig, RunSpec, load_config, perce
 from uniqkache.bench.runner import run_config
 from uniqkache.metrics.report import records_to_markdown
 from uniqkache.policies import available_aliases, available_policies
+from uniqkache.prefetch import available_prefetch_policies
 from uniqkache.utils.errors import UniqKacheError
 from uniqkache.utils.logging import get_logger
 
@@ -115,6 +116,25 @@ def build_parser() -> argparse.ArgumentParser:
         "tokens_for_bytes (floored, so the budget is never exceeded). Mutually "
         "exclusive with --capacity and --keep-ratio. The requested budget and the "
         "derived capacity are both recorded.",
+    )
+    parser.add_argument(
+        "--device-budget-mb",
+        type=float,
+        default=None,
+        help="Ceiling on device-resident cache bytes for offload planning, in "
+        "MiB. Unlike --memory-budget-mb this does not set the token capacity: "
+        "offloading moves bytes to the host tier without discarding tokens, so "
+        "it is also valid with --policy full_cache. On a CPU (single-tier) "
+        "device the run succeeds and records the offload as a no-op, because "
+        "TierManager refuses to plan without a cheaper tier.",
+    )
+    parser.add_argument(
+        "--prefetch-policy",
+        default=None,
+        choices=available_prefetch_policies(),
+        help="Prefetch policy applied after offload planning (serving order: "
+        "shed to the tier budget, then bring back what the next layer needs). "
+        "Default: no prefetch, until a measurement shows it pays for itself.",
     )
     parser.add_argument(
         "--attention-sinks",
@@ -260,6 +280,8 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         capacity_schedule=args.capacity_schedule,
         keep_ratio=args.keep_ratio,
         memory_budget_mb=args.memory_budget_mb,
+        device_budget_mb=args.device_budget_mb,
+        prefetch_policy=args.prefetch_policy,
         attention_sinks=args.attention_sinks,
         attention_access_threshold=args.attention_access_threshold,
         precision=args.precision,
@@ -338,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
                 offline=args.offline,
                 capacity_schedule=args.capacity_schedule,
                 compressor=args.compressor,
+                device_budget_mb=args.device_budget_mb,
+                prefetch_policy=args.prefetch_policy,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

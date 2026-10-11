@@ -17,6 +17,19 @@ Two project-specific conventions:
 
 ### Added
 
+- **Token-level (intra-layer) offload granularity (issue #30).** `KVCache.offload()` moved a
+  whole layer at once — all-resident or all-offloaded, so trade-offs were lumpy and prefetch
+  could only fetch whole layers. `LayerStorage` now supports split residency: slots
+  `[0, boundary)` stay device-resident (the hot head) while the cold tail behind them lives on
+  the host tier. `KVCache.offload(..., keep_resident=n)` and `KVCache.prefetch(..., tokens=n)`
+  are the facade spellings. Attention over a partially offloaded layer gathers on read — slow
+  but correct, the reference path — and a 50%-resident layer is pinned bit-for-bit against the
+  full-resident logits. Three interactions are defined rather than discovered: append, eviction
+  and compression collapse the split (re-establish it with `offload_tail`); a compressed layer
+  refuses to split; and on a single-tier device the offload is a no-op that reports zero,
+  because a split that moved nothing would claim a saving that did not happen — the same rule
+  `TierManager` enforces. `device_bytes()`/`offloaded_bytes()` report the split per tier by
+  physical residency, and the split survives a checkpoint round trip.
 - **Offload and prefetch are reachable from a benchmark run (issue #8).** `offload/tiers.py`,
   `prefetch/sequential.py` and `prefetch/recency.py` were implemented and unit-tested but
   nothing in `bench/` referenced them, so no experiment could observe them. `RunSpec` gained

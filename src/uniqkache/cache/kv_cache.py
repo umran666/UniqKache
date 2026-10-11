@@ -178,10 +178,13 @@ class KVCache:
             self.enforce_capacity(layer_idx)
 
     def get(self, layer_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the resident ``(keys, values)`` for ``layer_idx``.
+        """Return the materialised ``(keys, values)`` for ``layer_idx``.
 
         When the layer holds a compressed representation the tensors are
-        dequantised on demand, so callers always see a float K/V pair.
+        dequantised on demand, so callers always see a float K/V pair. When
+        the layer is split across tiers, the hosted tail is gathered back to
+        the home device — slow, but correct, which is what a reference path
+        must be.
 
         Raises
         ------
@@ -350,21 +353,50 @@ class KVCache:
         layer_idx: int | None = None,
         *,
         target: str | torch.device = "cpu",
+        keep_resident: int | None = None,
     ) -> int:
         """Move cached bytes to a cheaper memory tier.
 
-        Returns the number of layers that actually moved.
+        Parameters
+        ----------
+        layer_idx:
+            A single layer, or ``None`` for every layer.
+        target:
+            The tier to move to.
+        keep_resident:
+            Token-level granularity. ``None`` (default) moves whole layers.
+            An integer keeps the first ``keep_resident`` tokens of each layer
+            on the compute device and offloads the cold tail behind them —
+            the granularity real serving systems use, so a layer can be 50%
+            resident instead of all-or-nothing.
+
+        Returns
+        -------
+        int
+            Whole-layer mode: the number of layers that actually moved.
+            Token-level mode: the number of tokens that moved to the tier.
+            The two modes count different things, which is why the parameter
+            that selects the mode is explicit rather than inferred.
         """
         target_device = resolve_device(target)
         moved = 0
-        for idx in self._target_layers(layer_idx):
-            layer = self._store.layer(idx)
-            if not layer.is_initialized or layer.is_offloaded:
-                continue
-            if layer.resident_device == target_device:
-                continue
-            self._store.move_to(target_device, idx)
-            moved += 1
+        if keep_resident is None:
+            for idx in self._target_layers(layer_idx):
+                layer = self._store.layer(idx)
+                if not layer.is_initialized or layer.is_offloaded:
+                    continue
+                if layer.resident_device == target_device:
+                    continue
+                # A split layer has nothing on the target tier yet; move_to
+                # collapses it and relocates the whole layer, which is the
+                # whole-layer spelling of the same idea.
+                self._store.move_to(target_device, idx)
+                moved += 1
+        else:
+            if keep_resident < 0:
+                raise CacheStateError(f"keep_resident must be >= 0, got {keep_resident}")
+            for idx in self._target_layers(layer_idx):
+                moved += self._store.layer(idx).offload_tail(keep_resident, host=target_device)
 
         if moved:
             self._offloads += 1
@@ -375,27 +407,48 @@ class KVCache:
         layer_idx: int | None = None,
         *,
         device: str | torch.device | None = None,
+        tokens: int | None = None,
     ) -> int:
         """Move offloaded bytes back to the compute device.
 
         Parameters
         ----------
+        layer_idx:
+            A single layer, or ``None`` for every layer.
         device:
             Destination. Defaults to the cache's home device.
+        tokens:
+            Token-level granularity. ``None`` (default) brings back whole
+            layers. An integer brings back the first ``tokens`` hosted tokens
+            of each split layer, front first (the frontmost hosted token is
+            the next one the resident prefix expects, so slot order is
+            preserved).
 
         Returns
         -------
         int
-            Number of layers brought back.
+            Whole-layer mode: the number of layers brought back. Token-level
+            mode: the number of tokens brought back.
         """
         home = resolve_device(device) if device is not None else self._store.device
         brought_back = 0
-        for idx in self._target_layers(layer_idx):
-            layer = self._store.layer(idx)
-            if not layer.is_offloaded:
-                continue
-            self._store.move_to(home, idx)
-            brought_back += 1
+        if tokens is None:
+            for idx in self._target_layers(layer_idx):
+                layer = self._store.layer(idx)
+                if layer.is_offloaded:
+                    self._store.move_to(home, idx)
+                    brought_back += 1
+                elif layer.is_split:
+                    # "Bring everything back" includes the hosted tail of a
+                    # split layer, so whole-layer prefetch never leaves a
+                    # partially-hosted layer behind.
+                    layer.prefetch_tail(None)
+                    brought_back += 1
+        else:
+            if tokens < 0:
+                raise CacheStateError(f"tokens must be >= 0, got {tokens}")
+            for idx in self._target_layers(layer_idx):
+                brought_back += self._store.layer(idx).prefetch_tail(tokens)
 
         if brought_back:
             self._prefetches += 1

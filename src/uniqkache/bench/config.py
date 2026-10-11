@@ -89,6 +89,15 @@ class RunSpec:
         ``device_budget_mb`` (a byte ceiling is the controller's native unit);
         ``allow_recompute`` is False, because re-running the model is the
         runtime's job and the controller refuses to fake it.
+    adaptive_eviction:
+        Recompute the token budget from *observed* device memory pressure
+        between decode steps, via
+        :class:`~uniqkache.runtime.pressure.MemoryPressureMonitor`, instead of
+        holding the initial budget fixed. Requires ``device_budget_mb`` (the
+        device-wide byte ceiling pressure is measured against — deliberately
+        not ``memory_budget_mb``, whose whole job is to derive the initial
+        capacity, leaving the monitor nothing to tighten); every tightening
+        lands in the record's ``adaptation_events``.
     """
 
     model: str = "synthetic:tiny"
@@ -107,6 +116,7 @@ class RunSpec:
     device_budget_mb: float | None = None
     prefetch_policy: str | None = None
     controller: str | None = None
+    adaptive_eviction: bool = False
     attention_sinks: int = 0
     attention_access_threshold: float = 1e-6
     precision: str = "float32"
@@ -169,6 +179,16 @@ class RunSpec:
             # rather than silently running without one and recording a trace
             # of nothing.
             raise ConfigError(f"unknown controller {self.controller!r}. Available: adaptive")
+        if self.adaptive_eviction and self.device_budget_mb is None:
+            # The monitor measures observed device bytes against a device-wide
+            # ceiling; without one there is nothing to compare the observation
+            # to. ``memory_budget_mb`` is deliberately not accepted here: it
+            # derives the initial capacity, so measuring against it could never
+            # tighten (capacity already equals tokens_for_bytes(budget)).
+            raise ConfigError(
+                "adaptive_eviction needs a device byte budget to measure pressure "
+                "against: set device_budget_mb"
+            )
         if self.attention_sinks < 0:
             raise ConfigError(f"attention_sinks must be >= 0, got {self.attention_sinks}")
         if self.batch_size < 1:

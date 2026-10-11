@@ -160,6 +160,18 @@ Two behaviours worth knowing:
   therefore a decompress-append-recompress cycle. This is correct but not cheap; it is
   documented on the method rather than hidden.
 
+- **`offload_tail` / `prefetch_tail` — split residency.** A layer's bytes can live on both
+  tiers at once: slots `[0, boundary)` stay device-resident (the hot head), the cold tail
+  behind them moves to the host tier. `KVCache.offload(..., keep_resident=n)` and
+  `KVCache.prefetch(..., tokens=n)` are the facade spellings. Three interactions are
+  defined, not discovered: reads **gather-on-read** (the public `keys`/`values` concatenate
+  both tiers, moving host rows home — slow but correct, the reference path);
+  **append, eviction and compression collapse the split** (new rows are the hottest tokens
+  and must join the resident prefix in slot order; survivors are gathered into one buffer),
+  so the split is always something a caller re-establishes; and accounting is per tier via
+  `device_bytes()` / `offloaded_bytes()`, so the split can never be mistaken for a
+  reduction in total memory.
+
 - **Preallocated buffer and amortised O(1) append.** Storage is backed by contiguous
   preallocated buffers along the sequence dimension:
   - When `capacity` is configured (bounded cache), buffers are allocated up to `capacity`

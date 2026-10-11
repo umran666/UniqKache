@@ -27,6 +27,29 @@ Storage is preallocated using a contiguous buffer along the sequence dimension:
   doubling, amortising allocation costs to O(1) per token (O(T) total sequence time).
 * Eviction trims oversized buffers to the configured capacity (or surviving
   occupancy when unbounded). An empty layer releases its backing buffers.
+
+Split residency
+---------------
+A layer's bytes can live on **both** tiers at once: slots ``[0, boundary)`` stay
+device-resident (the hot head — sinks and recent tokens) while the tail
+``[boundary, num_tokens)`` moves to the host tier (the cold tail). This is the
+granularity real serving systems use, and it is what
+:meth:`LayerStorage.offload_tail` / :meth:`LayerStorage.prefetch_tail` operate
+on. Three interactions are defined rather than discovered:
+
+* **Attention reads gather-on-read.** The public ``keys``/``values`` properties
+  concatenate the resident prefix with the hosted tail, moving host rows home
+  first. Slow, but correct — and correct is the requirement for a reference
+  path.
+* **Append, eviction and compression collapse the split.** New rows are the
+  hottest tokens and must join the resident prefix in slot order; ``keep``
+  gathers survivors into one buffer; compression quantises the gathered whole.
+  Each operation documents that it materialises first, so the split is always
+  something a caller re-establishes with ``offload_tail``, never a hidden
+  invariant the store silently maintains.
+* **Accounting is per tier, always.** :meth:`LayerStorage.device_bytes` and
+  :meth:`LayerStorage.offloaded_bytes` report the two shares separately, so the
+  split cannot be mistaken for a reduction in total memory.
 """
 
 from __future__ import annotations
@@ -112,27 +135,62 @@ class LayerStorage:
         self._values_buf: torch.Tensor | None = None
         self._compressed: CompressionResult | None = None
         self._offloaded = False
+        # Split residency: slots [0, _resident_boundary) live on the home
+        # device, [_resident_boundary, num_tokens) live on the host tier. A
+        # layer is "split" iff _host_keys_buf is not None, which by
+        # construction implies 0 < _resident_boundary < num_tokens (a
+        # fully-offloaded layer uses the whole-layer path in move_to instead).
+        self._resident_boundary = 0
+        self._host_keys_buf: torch.Tensor | None = None
+        self._host_values_buf: torch.Tensor | None = None
         self.metadata = LayerMetadata(num_sinks=self.num_sinks, device=self.device)
 
     # -- introspection -----------------------------------------------------
 
     @property
     def keys(self) -> torch.Tensor | None:
-        """Materialised keys, dequantising on demand when compressed."""
-        if self._keys_buf is not None:
-            return self._keys_buf[:, :, : self.num_tokens, :]
+        """Materialised keys, dequantising and gathering on demand.
+
+        A split layer's hosted tail is moved home and concatenated behind the
+        resident prefix, so callers always see the full token set in slot
+        order. This is the deliberately slow, correct reference path; a
+        production tiering scheme would prefetch before compute instead.
+        """
         if self._compressed is not None:
             return self._dequantize()[0]
+        if self._host_keys_buf is not None:
+            return self._gather(self._keys_buf, self._host_keys_buf)
+        if self._keys_buf is not None:
+            return self._keys_buf[:, :, : self.num_tokens, :]
         return None
 
     @property
     def values(self) -> torch.Tensor | None:
-        """Materialised values, dequantising on demand when compressed."""
-        if self._values_buf is not None:
-            return self._values_buf[:, :, : self.num_tokens, :]
+        """Materialised values, dequantising and gathering on demand."""
         if self._compressed is not None:
             return self._dequantize()[1]
+        if self._host_values_buf is not None:
+            return self._gather(self._values_buf, self._host_values_buf)
+        if self._values_buf is not None:
+            return self._values_buf[:, :, : self.num_tokens, :]
         return None
+
+    def _gather(
+        self, resident: torch.Tensor | None, hosted: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        """Concatenate a split layer's two tiers, in slot order, on the home device."""
+        if resident is None and hosted is None:
+            return None
+        if resident is None:
+            assert hosted is not None
+            return hosted.to(self.device)
+        if hosted is None:
+            return resident
+        # The resident buffer is allocated to exactly the boundary, but slice
+        # defensively: a preallocated buffer holding extra rows must not leak
+        # stale slots into the gathered view.
+        prefix = resident[:, :, : self._resident_boundary, :]
+        return torch.cat([prefix, hosted.to(self.device)], dim=2)
 
     @property
     def _keys(self) -> torch.Tensor | None:
@@ -146,6 +204,12 @@ class LayerStorage:
     @_keys.setter
     def _keys(self, val: torch.Tensor | None) -> None:
         self._keys_buf = val
+        # Assigning raw tensors replaces the layer's whole content, so any
+        # residency split the caller does not know about is dropped rather
+        # than left describing buffers that no longer exist.
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
 
     @property
     def _values(self) -> torch.Tensor | None:
@@ -156,6 +220,10 @@ class LayerStorage:
     @_values.setter
     def _values(self, val: torch.Tensor | None) -> None:
         self._values_buf = val
+        # Replaces the layer's whole content; see the `_keys` setter.
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
 
     @property
     def num_tokens(self) -> int:
@@ -176,6 +244,32 @@ class LayerStorage:
         return self._offloaded
 
     @property
+    def is_split(self) -> bool:
+        """Whether this layer's bytes span both tiers (partially offloaded).
+
+        Distinct from :attr:`is_offloaded`, which means the *whole* layer was
+        moved: a split layer keeps its hot head on the compute device.
+        """
+        return self._host_keys_buf is not None
+
+    @property
+    def resident_tokens(self) -> int:
+        """Tokens whose bytes live on the home device.
+
+        Equal to :attr:`num_tokens` unless the layer is split.
+        """
+        if self._host_keys_buf is None:
+            return self.num_tokens
+        return self._resident_boundary
+
+    @property
+    def offloaded_tokens(self) -> int:
+        """Tokens whose bytes live on the host tier; 0 unless split."""
+        if self._host_keys_buf is None:
+            return 0
+        return self.num_tokens - self._resident_boundary
+
+    @property
     def resident_device(self) -> torch.device:
         """Where the tensors physically live right now."""
         if self._keys_buf is not None:
@@ -185,31 +279,61 @@ class LayerStorage:
         return self.device
 
     def bytes(self) -> int:
-        """Resident bytes held by this layer, honouring compression."""
+        """Bytes held by this layer across *every* tier, honouring compression.
+
+        Offloaded bytes still exist, so they are counted: ``bytes()`` is the
+        whole footprint, while :meth:`device_bytes` and :meth:`offloaded_bytes`
+        split it by tier.
+        """
         if self._compressed is not None:
             return int(self._compressed.compressed_bytes)
-        if self._keys_buf is None or self._values_buf is None:
-            return 0
-        return int(self._keys_buf.untyped_storage().nbytes()) + int(
-            self._values_buf.untyped_storage().nbytes()
-        )
+        total = 0
+        if self._keys_buf is not None and self._values_buf is not None:
+            total += int(self._keys_buf.untyped_storage().nbytes()) + int(
+                self._values_buf.untyped_storage().nbytes()
+            )
+        if self._host_keys_buf is not None and self._host_values_buf is not None:
+            total += int(self._host_keys_buf.untyped_storage().nbytes()) + int(
+                self._host_values_buf.untyped_storage().nbytes()
+            )
+        return total
 
     def device_bytes(self) -> int:
         """Bytes of this layer resident on the cache's home (compute) device.
 
-        Zero for a whole-layer offload. Reported separately from :meth:`bytes`
-        so that offloading cannot be mistaken for a memory reduction — the
-        bytes still exist, elsewhere.
+        Zero for a whole-layer offload; the resident share for a split layer.
+        A hosted region whose buffers are physically on the home device (only
+        possible when a checkpoint recorded one, or a test built one) has not
+        left the compute tier and is counted here, so the figure always
+        describes physical residency.
         """
         if self._offloaded:
             return 0
+        if self._host_keys_buf is not None and self._host_keys_buf.device != self.device:
+            if self._keys_buf is None or self._values_buf is None:
+                return 0
+            return int(self._keys_buf.untyped_storage().nbytes()) + int(
+                self._values_buf.untyped_storage().nbytes()
+            )
         return self.bytes()
 
     def offloaded_bytes(self) -> int:
-        """Bytes of this layer held on a non-home tier, or 0 when resident."""
+        """Bytes of this layer held on a non-home tier.
+
+        The whole layer for a whole-layer offload; the hosted share for a
+        split layer; zero when everything is device-resident. A hosted region
+        sitting on the home device counts as zero: it never left the compute
+        tier, and counting it would claim a saving that did not happen.
+        """
         if self._offloaded:
             return self.bytes()
-        return 0
+        if self._host_keys_buf is None or self._host_values_buf is None:
+            return 0
+        if self._host_keys_buf.device == self.device:
+            return 0
+        return int(self._host_keys_buf.untyped_storage().nbytes()) + int(
+            self._host_values_buf.untyped_storage().nbytes()
+        )
 
     def payload_bytes(self) -> int:
         """Live K/V payload, excluding unused preallocated slots."""
@@ -250,7 +374,15 @@ class LayerStorage:
         return keys.dequantize(), values.dequantize()
 
     def apply_compression(self, result: CompressionResult) -> None:
-        """Adopt a compressed representation, preserving occupancy."""
+        """Adopt a compressed representation, preserving occupancy.
+
+        The compressed payload describes the whole gathered layer, so any
+        residency split is dropped: ``device_bytes`` falls back to the whole
+        compressed payload and ``offloaded_bytes`` to zero. Compressing a split
+        layer is therefore lossless with respect to *tokens* — the tier split
+        is simply re-established by :meth:`offload_tail` afterwards (which
+        refuses while compressed, so callers must decompress first).
+        """
         if result.num_tokens != self.num_tokens:
             raise CacheStateError(
                 f"compression changed occupancy for layer {self.layer_idx}: "
@@ -260,6 +392,9 @@ class LayerStorage:
         self._compressed = result
         self._keys_buf = None
         self._values_buf = None
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
 
     def materialize(self) -> None:
         """Expand a compressed representation back to float tensors."""
@@ -303,6 +438,10 @@ class LayerStorage:
         new rows' precision or re-quantising silently. We choose the explicit,
         visible behaviour and document it, rather than quantising behind the
         caller's back.
+
+        Appending to a split layer collapses the split first: new rows are the
+        hottest tokens in the layer and must join the resident prefix in slot
+        order. Re-establish the split with :meth:`offload_tail` afterwards.
         """
         if keys.shape != values.shape:
             raise CacheStateError(
@@ -329,6 +468,8 @@ class LayerStorage:
 
         if self.is_offloaded:
             self.move_to(self.device)
+        if self._host_keys_buf is not None:
+            self._collapse_split()
         keys = keys.to(device=self.device, dtype=self.dtype)
         values = values.to(device=self.device, dtype=self.dtype)
         num_new = int(keys.shape[2])
@@ -387,10 +528,17 @@ class LayerStorage:
 
         Returns the number of tokens dropped. Compression is preserved: a
         quantised layer stays quantised, with per-token scales gathered
-        alongside the payload where the quantisation axis requires it.
+        alongside the payload where the quantisation axis requires it. A split
+        layer is collapsed first: eviction gathers its survivors into one
+        device-resident buffer, because the boundary would otherwise describe a
+        prefix of slots that may not all have survived. Re-establish the split
+        with :meth:`offload_tail` afterwards.
         """
         if not self.is_initialized:
             return 0
+
+        if self._host_keys_buf is not None:
+            self._collapse_split()
 
         before = self.num_tokens
         home_device = self.resident_device
@@ -461,10 +609,21 @@ class LayerStorage:
         self._values_buf = None
         self._compressed = None
         self._offloaded = False
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
         self.metadata.clear()
 
     def move_to(self, device: torch.device) -> None:
-        """Relocate tensors, tracking whether they left their home device."""
+        """Relocate tensors, tracking whether they left their home device.
+
+        A split layer is collapsed first: both tiers move together, because a
+        residency split whose halves sit on the same device has no meaning and
+        would leave ``device_bytes``/``offloaded_bytes`` describing a
+        separation that no longer exists.
+        """
+        if self._host_keys_buf is not None:
+            self._collapse_split()
         if self._compressed is not None:
             keys = self._compressed.keys
             values = self._compressed.values
@@ -498,6 +657,199 @@ class LayerStorage:
 
         self.metadata.to(device)
         self._offloaded = device != self.device
+
+    # -- split residency ---------------------------------------------------
+
+    def offload_tail(self, resident: int, *, host: torch.device) -> int:
+        """Move the cold tail ``[resident:, num_tokens)`` to the host tier.
+
+        Parameters
+        ----------
+        resident:
+            Number of leading tokens to keep on the home device. ``0`` means
+            "offload everything" and delegates to whole-layer :meth:`move_to`;
+            a value equal to :attr:`num_tokens` is a no-op.
+        host:
+            The host tier's device.
+
+        Returns
+        -------
+        int
+            Number of tokens whose bytes moved to the host tier. Returns 0
+            without splitting when the host tier *is* the home device: there is
+            no cheaper tier to move to, and a split that moved nothing would
+            claim a saving that did not happen. Construct the cache on a CUDA
+            device (or pass a real second tier) to exercise the move.
+
+        Raises
+        ------
+        CacheStateError
+            If ``resident`` is out of range, or the layer holds a compressed
+            payload. Compression and split residency are deliberately not
+            composed: a quantised layer is quantised as a whole, so splitting
+            it would need per-row quantised gathers for no benefit the
+            reference path can measure. Decompress first.
+        """
+        if self._compressed is not None:
+            raise CacheStateError(
+                f"layer {self.layer_idx} holds a compressed payload; decompress before "
+                "splitting its residency. Compression is applied to the whole gathered "
+                "layer, so a split compressed layer has no defined semantics."
+            )
+        if resident < 0 or resident > self.num_tokens:
+            raise CacheStateError(
+                f"resident boundary {resident} out of range for layer {self.layer_idx} "
+                f"holding {self.num_tokens} tokens"
+            )
+        if host == self.device:
+            # No cheaper tier: there is nothing to offload to, so the call is a
+            # no-op that reports zero — the same rule the whole-layer path
+            # applies (and TierManager enforces loudly). Reporting a split here
+            # would claim bytes left the compute device when they did not.
+            _log.debug(
+                "layer %d: host tier %s is the home device; nothing to offload",
+                self.layer_idx,
+                host,
+            )
+            return 0
+        if resident == 0:
+            # "Offload everything" is the whole-layer spelling; use it so a
+            # fully-offloaded layer keeps the single representation the
+            # whole-layer paths expect.
+            if self.is_offloaded and self.resident_device == host:
+                return 0
+            self.move_to(host)
+            return self.num_tokens
+        if self.is_offloaded:
+            # Whole-layer offload and split residency are two spellings of the
+            # same idea; re-establish a single representation before splitting.
+            self.move_to(self.device)
+        if resident == self.num_tokens:
+            return 0
+        if self._host_keys_buf is not None:
+            # Re-splitting collapses any existing split first, so the boundary
+            # always describes one contiguous hosted region.
+            self._collapse_split()
+
+        assert self._keys_buf is not None and self._values_buf is not None
+        hosted = self.num_tokens - resident
+        # Slice to the live token count, not the buffer end: an unbounded
+        # layer's buffer is preallocated past its occupancy, and offloading
+        # unused slots would move bytes that hold no tokens.
+        self._host_keys_buf = self._keys_buf[:, :, resident : self.num_tokens, :].clone().to(host)
+        self._host_values_buf = (
+            self._values_buf[:, :, resident : self.num_tokens, :].clone().to(host)
+        )
+        self._shrink_resident(resident)
+        self._resident_boundary = resident
+        _log.debug(
+            "layer %d: split residency, %d resident / %d on %s",
+            self.layer_idx,
+            resident,
+            hosted,
+            host,
+        )
+        return hosted
+
+    def prefetch_tail(self, count: int | None = None) -> int:
+        """Bring hosted tokens back to the home device, preserving slot order.
+
+        Parameters
+        ----------
+        count:
+            How many hosted tokens to bring back, front first. ``None`` means
+            all of them. Hosted tokens sit at the end of the slot range, so
+            the frontmost hosted token is the next one the resident prefix
+            expects — the order is preserved by construction.
+
+        Returns
+        -------
+        int
+            Number of tokens brought back. Zero when nothing is hosted.
+        """
+        if self._host_keys_buf is None or self._host_values_buf is None:
+            return 0
+        if count is not None and count < 0:
+            raise CacheStateError(f"prefetch count must be >= 0, got {count}")
+
+        hosted = self.offloaded_tokens
+        bring = hosted if count is None else min(count, hosted)
+        if bring <= 0:
+            return 0
+
+        assert self._keys_buf is not None and self._values_buf is not None
+        new_keys = self._host_keys_buf[:, :, :bring, :].to(self.device)
+        new_values = self._host_values_buf[:, :, :bring, :].to(self.device)
+        boundary = self._resident_boundary + bring
+        self._grow_resident(new_keys, new_values, boundary)
+
+        if bring == hosted:
+            self._host_keys_buf = None
+            self._host_values_buf = None
+        else:
+            self._host_keys_buf = self._host_keys_buf[:, :, bring:, :].clone()
+            self._host_values_buf = self._host_values_buf[:, :, bring:, :].clone()
+        self._resident_boundary = boundary
+        return bring
+
+    def _collapse_split(self) -> None:
+        """Gather a split layer back into one device-resident buffer."""
+        if self._host_keys_buf is None:
+            return
+        assert self._host_keys_buf is not None and self._host_values_buf is not None
+        keys = self._gather(self._keys_buf, self._host_keys_buf)
+        values = self._gather(self._values_buf, self._host_values_buf)
+        assert keys is not None and values is not None
+        num = int(keys.shape[2])
+        self._keys_buf = torch.empty(
+            (self.batch_size, self.num_kv_heads, num, self.head_dim),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        self._values_buf = torch.empty_like(self._keys_buf)
+        self._keys_buf.copy_(keys)
+        self._values_buf.copy_(values)
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
+
+    def _shrink_resident(self, resident: int) -> None:
+        """Reallocate the resident buffers to hold exactly ``resident`` rows."""
+        assert self._keys_buf is not None and self._values_buf is not None
+        keys = self._keys_buf[:, :, :resident, :]
+        values = self._values_buf[:, :, :resident, :]
+        new_keys = torch.empty(
+            (self.batch_size, self.num_kv_heads, resident, self.head_dim),
+            dtype=self.dtype,
+            device=keys.device,
+        )
+        new_values = torch.empty_like(new_keys)
+        new_keys.copy_(keys)
+        new_values.copy_(values)
+        self._keys_buf = new_keys
+        self._values_buf = new_values
+
+    def _grow_resident(
+        self, new_keys: torch.Tensor, new_values: torch.Tensor, boundary: int
+    ) -> None:
+        """Append gathered host rows behind the resident prefix."""
+        assert self._keys_buf is not None and self._values_buf is not None
+        alloc = max(boundary, self.capacity or boundary)
+        buf_keys = torch.empty(
+            (self.batch_size, self.num_kv_heads, alloc, self.head_dim),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        buf_values = torch.empty_like(buf_keys)
+        current = self._resident_boundary
+        if current:
+            buf_keys[:, :, :current, :] = self._keys_buf[:, :, :current, :]
+            buf_values[:, :, :current, :] = self._values_buf[:, :, :current, :]
+        added = int(new_keys.shape[2])
+        buf_keys[:, :, current : current + added, :] = new_keys
+        buf_values[:, :, current : current + added, :] = new_values
+        self._keys_buf = buf_keys
+        self._values_buf = buf_values
 
     def replace(self, keys: torch.Tensor, values: torch.Tensor) -> None:
         """Swap the stored float tensors in place, preserving token count.
@@ -533,6 +885,9 @@ class LayerStorage:
         self._keys_buf[:, :, :needed, :] = keys
         self._values_buf[:, :, :needed, :] = values
         self._compressed = None
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
 
     def state_dict(self) -> dict[str, Any]:
         """Serialisable dictionary of this layer's tensors, compression, and metadata."""
@@ -573,9 +928,14 @@ class LayerStorage:
         elif self.is_initialized:
             assert self._keys is not None and self._values is not None
             assert self._keys_buf is not None
+            state["resident_boundary"] = self._resident_boundary
             state["allocated_tokens"] = int(self._keys_buf.shape[2])
             state["keys"] = self._keys.clone()
             state["values"] = self._values.clone()
+            if self._host_keys_buf is not None and self._host_values_buf is not None:
+                state["host_keys"] = self._host_keys_buf.clone()
+                state["host_values"] = self._host_values_buf.clone()
+                state["host_device"] = str(self._host_keys_buf.device)
         return state
 
     def load_state_dict(
@@ -607,6 +967,11 @@ class LayerStorage:
         is_compressed = state.get("is_compressed", False)
         is_offloaded = state.get("is_offloaded", False)
         recorded_resident = state.get("resident_device", str(self.device))
+
+        # A restored layer starts without a split; the split keys below opt in.
+        self._host_keys_buf = None
+        self._host_values_buf = None
+        self._resident_boundary = 0
 
         if target_device is not None:
             dev = target_device
@@ -750,7 +1115,50 @@ class LayerStorage:
             self._values_buf[:, :, : values.shape[2], :] = values
             self._compressed = None
             self._offloaded = is_offloaded if target_device is None else dev != self.device
-            seq_len = int(keys.shape[2])
+
+            # Restore split residency if the checkpoint carried one. The host
+            # tier's device is recorded so the hosted rows return to the tier
+            # they were saved from, rather than silently joining the resident
+            # side (which would make the restored "split" all-device).
+            host_keys = state.get("host_keys")
+            host_values = state.get("host_values")
+            if (host_keys is None) != (host_values is None):
+                raise CacheStateError(
+                    f"layer {self.layer_idx} checkpoint has host_keys without host_values "
+                    "or vice versa; a split must describe both tiers"
+                )
+            resident_count = int(keys.shape[2])
+            if host_keys is not None and host_values is not None:
+                for name, tensor in (("host_keys", host_keys), ("host_values", host_values)):
+                    if tensor.dim() != 4:
+                        raise CacheStateError(f"{name} must be 4-D, got {tuple(tensor.shape)}")
+                    if tensor.shape[0] != config.batch_size:
+                        raise CacheStateError(
+                            f"layer {self.layer_idx} {name} batch_size mismatch: "
+                            f"{tensor.shape[0]} vs {config.batch_size}"
+                        )
+                    if tensor.shape[1] != config.num_kv_heads:
+                        raise CacheStateError(
+                            f"layer {self.layer_idx} {name} num_kv_heads mismatch: "
+                            f"{tensor.shape[1]} vs {config.num_kv_heads}"
+                        )
+                    if tensor.shape[3] != config.head_dim:
+                        raise CacheStateError(
+                            f"layer {self.layer_idx} {name} head_dim mismatch: "
+                            f"{tensor.shape[3]} vs {config.head_dim}"
+                        )
+                host_dev = torch.device(state.get("host_device", "cpu"))
+                self._host_keys_buf = host_keys.to(device=host_dev)
+                self._host_values_buf = host_values.to(device=host_dev)
+                boundary = state.get("resident_boundary", resident_count)
+                if boundary != resident_count:
+                    raise CacheStateError(
+                        f"layer {self.layer_idx} checkpoint resident_boundary {boundary} does "
+                        f"not match the stored resident rows {resident_count}"
+                    )
+                self._resident_boundary = resident_count
+
+            seq_len = resident_count + (int(host_keys.shape[2]) if host_keys is not None else 0)
             self.metadata.load_state_dict(
                 state["metadata"], device=dev, expected_num_tokens=seq_len
             )

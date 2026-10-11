@@ -47,7 +47,7 @@ QUALITY_FIELDS = (
     "cache_final_tokens",
 )
 
-CONFIGS = ("correctness.json", "needle_comparison.json")
+CONFIGS = ("correctness.json", "needle_comparison.json", "adaptive_controller.json")
 
 
 def _records_by_config(results_dir: Path) -> dict[str, dict[str, dict]]:

@@ -177,6 +177,17 @@ whose quality benefit requires an experiment, not a validated improvement.
 | `cache_compression_ratio` | Representation change. `1.0` means uncompressed. |
 | `cache_final_tokens` | Tokens held, **summed across layers**. Divide by the layer count for a per-layer figure. |
 | `mirror_overhead_bytes` | Extra K/V bytes the run holds on top of the model-native cache. On an HF run this is the adapter's mirror duplication: the model's own `DynamicCache` plus the UniqKache mirror each hold one full copy, so **subtract this from `cache_bytes_total` for the model-native footprint**, the denominator any memory-reduction claim must use. `null` on the synthetic backend, where there is no mirror. |
+
+**Measured on a real model.** `experiments/results/hf-real-model-eviction-*` runs
+`hf-internal-testing/tiny-random-LlamaForCausalLM` (context 32, 8 generated tokens, seed 42,
+offline): `mirror_overhead_bytes` is **0** on both rows. On that stack the adapter *is* the
+model's cache — `UniqKacheHFCache` subclasses `transformers.cache_utils.Cache` and the model
+updates it in place — so a second copy never exists and `cache_bytes_total` is already the
+model-native footprint. The field is nonzero only on stacks where the model discards the cache
+object it was given and returns its own (the transformers ≤ 4.48 path); there the two copies
+each hold one full K/V set, and `cache_bytes_total − mirror_overhead_bytes` is the figure a
+memory-reduction claim must use. Both paths are pinned by
+`tests/unit/test_hf_backend.py::TestMirrorOverheadCounter`.
 | `peak_memory_bytes` | Peak device memory during the run. `null` on CPU — never `0`. |
 
 **`cache_bytes_on_device` and `cache_bytes_offloaded` are separate on purpose.** Reporting a

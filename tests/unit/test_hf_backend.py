@@ -190,6 +190,78 @@ class TestMirrorOverheadCounter:
         backend.reset()
         assert backend.mirrored_bytes == 128
 
+    def test_a_model_that_adopts_the_adapter_creates_no_mirror(self, backend):
+        """When the model keeps the adapter as its cache there is no second copy.
+
+        This is the transformers 5.x path and the reason the committed
+        real-model measurement records ``mirror_overhead_bytes = 0``: the
+        adapter *is* the model's cache, so ``cache_bytes_total`` is already
+        the model-native footprint and nothing is overstated. The mirror only
+        exists on stacks where the model discards the cache object it was
+        given and returns its own (the transformers <= 4.48 path).
+        """
+
+        class _AdoptingStub(_StubModel):
+            def forward(self, input_ids, past_key_values=None, **kwargs):
+                # A model that writes through the adapter and returns it,
+                # exactly as transformers 5.x does with a Cache object.
+                rows = int(input_ids.shape[1])
+                past_key_values[0].update(torch.zeros(1, 2, rows, 8), torch.zeros(1, 2, rows, 8))
+                return type(
+                    "Output",
+                    (),
+                    {
+                        "logits": torch.zeros(1, rows, 128),
+                        "past_key_values": past_key_values,
+                    },
+                )()
+
+        stub = _AdoptingStub()
+        adopting = HFBackend(stub, identifier="stub/adopting")
+        cache = KVCache(adopting.cache_config(capacity=8), policy=SlidingWindowPolicy())
+        adopting.forward(torch.randint(0, 128, (1, 4)), cache=cache)
+
+        assert adopting.mirrored_bytes == 0
+        assert cache.num_tokens(0) == 4  # the rows arrived through the adapter
+
+    def test_a_model_that_replaces_the_cache_mirrors_the_new_rows(self, backend):
+        """The transformers <= 4.48 path: the model returns its own cache.
+
+        The mirror is what keeps the UniqKache cache occupied on that stack,
+        and ``mirrored_bytes`` is exactly the overstatement the record must
+        be able to subtract.
+        """
+
+        class _ForeignCache:
+            def __init__(self, keys, values):
+                self.layers = [
+                    type("Layer", (), {"keys": keys, "values": values})(),
+                    type("Layer", (), {"keys": keys, "values": values})(),
+                ]
+
+        class _ReplacingStub(_StubModel):
+            def forward(self, input_ids, past_key_values=None, **kwargs):
+                rows = int(input_ids.shape[1])
+                keys = torch.zeros(1, 2, rows, 8)
+                values = torch.zeros(1, 2, rows, 8)
+                return type(
+                    "Output",
+                    (),
+                    {
+                        "logits": torch.zeros(1, rows, 128),
+                        "past_key_values": _ForeignCache(keys, values),
+                    },
+                )()
+
+        stub = _ReplacingStub()
+        replacing = HFBackend(stub, identifier="stub/replacing")
+        cache = KVCache(replacing.cache_config(capacity=8), policy=SlidingWindowPolicy())
+        replacing.forward(torch.randint(0, 128, (1, 4)), cache=cache)
+
+        per_layer = 4 * 2 * 8 * 4  # rows x kv heads x head dim x float32
+        assert replacing.mirrored_bytes == 2 * 2 * per_layer  # two layers, K and V
+        assert cache.num_tokens(0) == 4
+
 
 class TestExtractLayerKV:
     def test_none_cache_returns_none_pair(self):

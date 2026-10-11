@@ -151,6 +151,17 @@ class ControllerState:
     quality_signal:
         Optional current quality estimate, used only under
         ``MIN_COST_SUBJECT_TO_QUALITY``.
+    num_layers:
+        Layer count of the cache being controlled.
+    is_offloaded:
+        Whether the cursor layer's bytes currently sit off the compute device.
+    can_offload:
+        Whether a cheaper memory tier exists for the runtime to move bytes to.
+        False on a single-tier device (CPU). The controller must not choose an
+        action the runtime cannot perform: an ``offload`` decision that no-ops
+        every step is worse than choosing the next action in the loss order,
+        and a trace full of infeasible decisions is unauditable. Defaults to
+        True so existing callers that never set it keep the prior behaviour.
     """
 
     layer_idx: int
@@ -165,6 +176,7 @@ class ControllerState:
     quality_signal: float | None = None
     num_layers: int = 1
     is_offloaded: bool = False
+    can_offload: bool = True
 
     @property
     def total_bytes(self) -> int:

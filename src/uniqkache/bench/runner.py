@@ -31,6 +31,7 @@ import torch
 from uniqkache.bench.config import ExperimentConfig, RunSpec
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
+from uniqkache.controllers import ActionKind, AdaptiveController, Constraints
 from uniqkache.metrics.latency import LatencyStats
 from uniqkache.metrics.quality import (
     QualityResult,
@@ -188,6 +189,33 @@ def _make_cache(
         return KVCache(config, policy=None)
     policy = build_policy(spec.policy, **spec.policy_kwargs)
     return KVCache(config, policy=policy)
+
+
+def _build_controller(spec: RunSpec) -> AdaptiveController | None:
+    """Construct the spec's controller, or ``None`` for a policy-driven run.
+
+    The controller's native unit is a device byte ceiling, so its memory
+    budget comes from ``device_budget_mb``. ``allow_recompute`` is explicitly
+    False: ``RECOMPUTE`` is in the action vocabulary, but re-running the model
+    is the runtime's responsibility and the controller would refuse without a
+    callback — the experiment must not depend on a decision that cannot fire.
+    """
+    if spec.controller is None:
+        return None
+    if spec.controller != "adaptive":
+        raise ConfigError(f"unknown controller {spec.controller!r}. Available: adaptive")
+
+    memory_budget = None
+    if spec.device_budget_mb is not None:
+        memory_budget = int(spec.device_budget_mb * 1024 * 1024)
+    constraints = Constraints(memory_budget_bytes=memory_budget)
+    controller = AdaptiveController(constraints, allow_recompute=False)
+    _log.info(
+        "controller %r driving this run: memory_budget_bytes=%s allow_recompute=False",
+        spec.controller,
+        memory_budget,
+    )
+    return controller
 
 
 def _apply_tier_actions(spec: RunSpec, cache: KVCache, device: str) -> dict[str, Any]:
@@ -420,11 +448,14 @@ def _run_single_spec(
 
         allocation_strategy = build_allocation_strategy(spec.capacity_schedule)
 
+    controller = _build_controller(spec)
+
     engine = GenerationEngine(
         built.model,
         gen_cache,
         GenerationConfig(max_new_tokens=spec.max_new_tokens, seed=spec.seed),
         allocation_strategy=allocation_strategy,
+        controller=controller,
     )
     generation = engine.generate(prompt)
     latencies = LatencyStats.from_samples(generation.per_step_ms)
@@ -519,6 +550,20 @@ def _run_single_spec(
             + "offload requested on a single-tier device (no cheaper tier to move "
             "bytes to); see policy_config.tier_actions"
         )
+    if controller is not None and any(
+        decision.kind is not ActionKind.RETAIN for decision in controller.trace
+    ):
+        # The quality pass runs its own cache, configured identically but
+        # without the controller, so quality_value does not price the actions
+        # taken during generation. Say so; a byte reduction in the record
+        # alongside an unchanged quality number is otherwise easy to misread
+        # as "the action was free".
+        notes = (
+            (notes + " " if notes else "")
+            + "controller-driven run: the quality pass runs its own cache without the "
+            "controller, so quality_value does not price the controller's actions; "
+            "see docs/benchmarks.md"
+        )
 
     record = BenchmarkRecord(
         run_id=run_id,
@@ -547,7 +592,13 @@ def _run_single_spec(
         policy_config={
             **_policy_config(gen_cache),
             **({"tier_actions": tier_actions} if tier_actions else {}),
+            **({"controller": controller.state_dict()} if controller is not None else {}),
         },
+        controller_trace=(
+            [decision.to_dict() for decision in controller.trace]
+            if controller is not None
+            else None
+        ),
         capacity=gen_cache.capacity,
         capacity_schedule=spec.capacity_schedule,
         attention_sinks=spec.attention_sinks,
@@ -821,6 +872,7 @@ def run_spec(
         precision=base_record.precision,
         policy=base_record.policy,
         policy_config=base_record.policy_config,
+        controller_trace=base_record.controller_trace,
         capacity=base_record.capacity,
         attention_sinks=base_record.attention_sinks,
         memory_budget_mb=base_record.memory_budget_mb,

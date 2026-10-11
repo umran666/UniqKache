@@ -137,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: no prefetch, until a measurement shows it pays for itself.",
     )
     parser.add_argument(
+        "--controller",
+        default=None,
+        choices=["adaptive"],
+        help="Drive the run with an action-selection controller. 'adaptive' "
+        "consults AdaptiveController after prefill and between decode steps "
+        "and records every decision in the record's controller_trace. Its "
+        "memory budget is --device-budget-mb (a byte ceiling is the "
+        "controller's native unit).",
+    )
+    parser.add_argument(
         "--attention-sinks",
         type=int,
         default=4,
@@ -282,6 +292,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         memory_budget_mb=args.memory_budget_mb,
         device_budget_mb=args.device_budget_mb,
         prefetch_policy=args.prefetch_policy,
+        controller=args.controller,
         attention_sinks=args.attention_sinks,
         attention_access_threshold=args.attention_access_threshold,
         precision=args.precision,
@@ -362,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
                 compressor=args.compressor,
                 device_budget_mb=args.device_budget_mb,
                 prefetch_policy=args.prefetch_policy,
+                controller=args.controller,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

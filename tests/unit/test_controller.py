@@ -4,6 +4,11 @@ The controller's rules are a hypothesis, but the *plumbing* around them is not:
 the action vocabulary, the derived quality-risk mapping, the constraint
 arithmetic and the refusal to no-op silently are all contract, and are pinned
 here.
+
+The second half of this module covers the runnable path (issue #9): the
+controller driving a real GenerationEngine, its decisions landing in the
+benchmark record, and the rule that an action the runtime cannot perform is
+never chosen.
 """
 
 from __future__ import annotations
@@ -11,6 +16,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+from uniqkache.bench.config import RunSpec
+from uniqkache.bench.runner import run_spec
 from uniqkache.cache.kv_cache import KVCache
 from uniqkache.cache.types import CacheConfig
 from uniqkache.controllers import (
@@ -24,7 +31,8 @@ from uniqkache.controllers import (
     quality_risk_of,
 )
 from uniqkache.policies import SlidingWindowPolicy
-from uniqkache.utils.errors import UniqKacheError
+from uniqkache.runtime.generation import GenerationConfig, GenerationEngine
+from uniqkache.utils.errors import ConfigError, UniqKacheError
 
 
 def state(**kwargs) -> ControllerState:
@@ -42,6 +50,7 @@ def state(**kwargs) -> ControllerState:
         "quality_signal": None,
         "num_layers": 4,
         "is_offloaded": False,
+        "can_offload": True,
     }
     defaults.update(kwargs)
     return ControllerState(**defaults)
@@ -156,6 +165,21 @@ class TestDecisionRules:
         assert decision.kind is ActionKind.OFFLOAD
         assert decision.binding_constraint == "memory"
         assert decision.is_lossy is False
+
+    def test_rule3_never_chooses_an_infeasible_offload(self):
+        """Single-tier runtime: offload cannot fire, so compress is chosen.
+
+        A controller that picks an action the runtime cannot perform fills
+        the trace with infeasible decisions while the budget stays breached.
+        ``can_offload=False`` is how the runtime says "there is no cheaper
+        tier", and the loss order must skip to the next admissible action.
+        """
+        controller = AdaptiveController()
+        decision = controller.decide(
+            state(device_bytes=4096, device_byte_budget=2048, can_offload=False)
+        )
+        assert decision.kind is ActionKind.COMPRESS
+        assert decision.binding_constraint == "memory"
 
     def test_rule3_skips_offload_under_latency_pressure(self):
         """Byte-moving costs time, so under latency pressure it is rejected."""
@@ -314,3 +338,131 @@ class TestApplyDecision:
         )
         assert moved == 7
         assert calls == [2]
+
+
+# ---------------------------------------------------------------------------
+# The runnable path (issue #9): the controller drives a real engine
+# ---------------------------------------------------------------------------
+
+
+def _engine_cache(tiny_model, capacity: int = 8) -> KVCache:
+    """A cache shaped for the tiny model, with a sliding-window policy."""
+    config = tiny_model.config.cache_config(
+        capacity=capacity, attention_sinks=0, dtype=torch.float32, device="cpu"
+    )
+    return KVCache(config, policy=SlidingWindowPolicy())
+
+
+class TestControllerDrivesTheEngine:
+    """The decision chain was complete but nothing in bench/ instantiated it."""
+
+    def test_controller_acts_between_decode_steps(self, tiny_model):
+        cache = _engine_cache(tiny_model, capacity=8)
+        # A budget below the cache's own footprint: the memory rule binds from
+        # the first decision point after prefill.
+        controller = AdaptiveController(Constraints(memory_budget_bytes=64))
+
+        engine = GenerationEngine(
+            tiny_model, cache, GenerationConfig(max_new_tokens=4), controller=controller
+        )
+        engine.generate(torch.randint(0, 512, (1, 16)))
+
+        # One decision after prefill plus one between each pair of decode steps.
+        assert len(controller.trace) == 4
+        assert all(d.kind is ActionKind.COMPRESS for d in controller.trace)
+        # The action actually ran: the generation cache ends compressed.
+        assert cache.stats().compression_ratio > 1.0
+
+    def test_unconstrained_controller_retains_at_every_step(self, tiny_model):
+        cache = _engine_cache(tiny_model, capacity=8)
+        controller = AdaptiveController()  # no memory budget: nothing binds
+
+        engine = GenerationEngine(
+            tiny_model, cache, GenerationConfig(max_new_tokens=2), controller=controller
+        )
+        engine.generate(torch.randint(0, 512, (1, 16)))
+
+        assert [d.kind for d in controller.trace] == [ActionKind.RETAIN, ActionKind.RETAIN]
+
+    def test_offload_decisions_stay_feasible_on_single_tier(self, tiny_model):
+        """The engine must tell the controller when no cheaper tier exists."""
+        cache = _engine_cache(tiny_model, capacity=8)
+        controller = AdaptiveController(Constraints(memory_budget_bytes=64))
+
+        engine = GenerationEngine(
+            tiny_model, cache, GenerationConfig(max_new_tokens=2), controller=controller
+        )
+        engine.generate(torch.randint(0, 512, (1, 16)))
+
+        # CPU: offload is infeasible, so the trace compresses instead of
+        # recording offloads that would every one of them no-op.
+        assert controller.trace
+        assert all(d.kind is not ActionKind.OFFLOAD for d in controller.trace)
+
+
+class TestControllerOnTheRecord:
+    def test_trace_and_config_are_recorded(self):
+        outcome = run_spec(
+            RunSpec(
+                model="synthetic:tiny",
+                policy="token_importance",
+                context_length=32,
+                keep_ratio=0.25,
+                attention_sinks=2,
+                max_new_tokens=3,
+                measure_quality=False,
+                device_budget_mb=0.015,  # below the cache's own footprint
+                controller="adaptive",
+            )
+        )
+        record = outcome.record
+        assert record.controller_trace, "a controller-driven run must record its trace"
+        assert {d["kind"] for d in record.controller_trace} == {"compress"}
+
+        config = record.policy_config["controller"]
+        assert config["name"] == "adaptive"
+        assert config["allow_recompute"] is False
+        assert config["validated"] is False  # the prototype declares its status
+        assert config["constraints"]["memory_budget_bytes"] == int(0.015 * 1024 * 1024)
+
+        # The action is visible in the numbers, not just the trace.
+        assert record.cache_compression_ratio > 1.0
+
+    def test_policy_driven_run_records_no_trace(self):
+        outcome = run_spec(
+            RunSpec(
+                model="synthetic:tiny",
+                policy="token_importance",
+                context_length=32,
+                keep_ratio=0.25,
+                attention_sinks=2,
+                max_new_tokens=2,
+                measure_quality=False,
+            )
+        )
+        # None, not []: a trace of [] would claim a controller that decided
+        # nothing, and the vocabulary has an explicit `retain` for that.
+        assert outcome.record.controller_trace is None
+        assert "controller" not in outcome.record.policy_config
+
+    def test_unknown_controller_is_a_configuration_error(self):
+        with pytest.raises(ConfigError, match="unknown controller"):
+            RunSpec(model="synthetic:tiny", controller="magic")
+
+    def test_controller_without_a_byte_budget_runs_unconstrained(self):
+        """No device_budget_mb means the memory rule never binds; that is a
+        valid run, just a boring one."""
+        outcome = run_spec(
+            RunSpec(
+                model="synthetic:tiny",
+                policy="token_importance",
+                context_length=32,
+                keep_ratio=0.25,
+                attention_sinks=2,
+                max_new_tokens=2,
+                measure_quality=False,
+                controller="adaptive",
+            )
+        )
+        kinds = [d["kind"] for d in outcome.record.controller_trace or []]
+        assert kinds and set(kinds) == {"retain"}

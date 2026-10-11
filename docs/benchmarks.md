@@ -101,6 +101,7 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--memory-budget-mb` | — | KV budget in MiB, converted to a token capacity via `tokens_for_bytes` (floored, so the budget is never exceeded). Mutually exclusive with `--capacity` and `--keep-ratio`; both the requested budget and the derived capacity are recorded. |
 | `--device-budget-mb` | — | Ceiling on **device-resident** cache bytes, in MiB, for offload planning. Unlike `--memory-budget-mb` it does not set the token capacity: offloading moves bytes to the host tier without discarding tokens, so it is also valid with `--policy full_cache`. The plan and its outcome are recorded in `policy_config.tier_actions`. |
 | `--prefetch-policy` | off | `none`, `next_layer` or `recency`. Applied after offload planning, in serving order: shed to the tier budget, then bring back what the next layer needs. |
+| `--controller` | off | `adaptive`: drive the run with `AdaptiveController`, consulted after prefill and between decode steps. Its memory budget is `--device-budget-mb`. Every decision is recorded in `controller_trace`. |
 | `--output-dir` | `experiments/results` | Where results go. |
 | `--config` | — | Run an experiment config instead of a single ad-hoc run. |
 | `--sweep` | off | Expand into the 100/75/50/25/10 % retention sweep. |
@@ -202,6 +203,24 @@ Whatever happened is in `policy_config.tier_actions`: the requested byte budget,
 moved. Whether offloading is *worth* it — Open Question 5 — is not answered by this wiring and
 is not claimed to be.
 
+### Controllers
+
+`--controller adaptive` runs the same workload under `AdaptiveController`: it observes the
+cache between decode steps (occupancy, per-tier bytes, budgets, observed decode time) and
+applies one of `retain` / `evict` / `compress` / `offload` / `prefetch`. Two properties matter
+when reading the record:
+
+- **Every decision is on the record.** `controller_trace` holds one entry per decision point —
+  the action, the binding constraint, the reason, the rejected alternatives, and the derived
+  quality risk. `policy_config.controller` holds the constraints the controller ran under,
+  including `"validated": False`, which is the prototype's own declaration of its status.
+- **The quality pass does not price the controller's actions.** It runs its own cache,
+  configured identically but without the controller, so `quality_value` measures the *policy*,
+  not the controller's compression or eviction. A record where cache bytes fall while quality
+  is unchanged is therefore saying "the action's cost was not measured", not "the action was
+  free" — and the record's `notes` field carries that caveat whenever a non-retain decision
+  fired. See `docs/research.md`, R5.
+
 The logical, uncompressed payload identity (the historical R3 figures used this accounting):
 
 ```
@@ -275,7 +294,9 @@ irreproducible result is not evidence.
 **Workload** — `task`, `dataset`, `context_length`, `generated_tokens`, `batch_size`,
 `precision`
 
-**Cache** — `policy`, `policy_config`, `capacity`, `attention_sinks`, `compressor`
+**Cache** — `policy`, `policy_config`, `capacity`, `attention_sinks`, `compressor`,
+`controller_trace` (one entry per controller decision; `null` when no controller ran —
+`[]` would claim a controller that decided nothing)
 
 **Hardware** — `device`, `gpu_name`, `gpu_total_memory_bytes`, `gpu_compute_capability`
 

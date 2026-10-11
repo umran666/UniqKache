@@ -42,8 +42,10 @@ from uniqkache.models.base import LanguageModel
 if TYPE_CHECKING:
     from uniqkache.allocation.base import BaseAllocationStrategy
     from uniqkache.controllers.adaptive import AdaptiveController
+    from uniqkache.runtime.pressure import MemoryPressureMonitor
 from uniqkache.controllers.types import ControllerState
 from uniqkache.utils.device import (
+    current_memory_bytes,
     peak_memory_bytes,
     reset_peak_memory,
     resolve_device,
@@ -148,6 +150,14 @@ class GenerationEngine:
         decisions accumulate in ``controller.trace`` for the record.
         Adaptation runs *after* a step's timing is captured, so its cost is
         charged to the following step rather than hidden from the measurement.
+    pressure_monitor:
+        Optional
+        :class:`~uniqkache.runtime.pressure.MemoryPressureMonitor`. When
+        given, it is consulted at the same points and tightens the cache's
+        token budget when observed device pressure crosses its high watermark.
+        The eviction the tightened budget triggers is the policy's job, so a
+        cache without a policy logs and skips rather than recording an
+        adaptation that cannot be enforced.
     """
 
     def __init__(
@@ -159,12 +169,14 @@ class GenerationEngine:
         record_attention: bool | None = None,
         allocation_strategy: BaseAllocationStrategy | None = None,
         controller: AdaptiveController | None = None,
+        pressure_monitor: MemoryPressureMonitor | None = None,
     ) -> None:
         self.model = model
         self.cache = cache
         self.config = config or GenerationConfig()
         self.allocation_strategy = allocation_strategy
         self.controller = controller
+        self.pressure_monitor = pressure_monitor
 
         if record_attention is None:
             policy = cache.policy
@@ -228,6 +240,9 @@ class GenerationEngine:
 
         # Consult the controller once the prefill has populated the cache, so
         # its first decision sees real occupancy rather than an empty store.
+        # The pressure monitor runs first: a tighter token budget changes what
+        # the controller observes.
+        self._pressure_step()
         self._controller_step()
 
         next_token = input_ids[:, :0]
@@ -258,6 +273,7 @@ class GenerationEngine:
 
             # Between steps, not inside the timed region: the adaptation's
             # cost is charged to the following step rather than hidden.
+            self._pressure_step()
             self._controller_step()
 
             if self.config.stop_token_id is not None and bool(
@@ -319,6 +335,23 @@ class GenerationEngine:
                 "input tokens; the model backend is inconsistent"
             )
         return logits, weights
+
+    def _pressure_step(self) -> None:
+        """Let the memory-pressure monitor tighten the token budget.
+
+        The observable is the platform's own allocator counter when it has one
+        (CUDA), which counts weights and activations as well as cache; on CPU
+        it returns ``None`` and the monitor measures the cache's own footprint
+        instead. Either way the decision and its trigger land in the monitor's
+        event log, which the runner writes onto the record.
+        """
+        if self.pressure_monitor is None:
+            return
+        self.pressure_monitor.update(
+            self.cache,
+            step=self.cache.step,
+            total_device_bytes=current_memory_bytes(self.device),
+        )
 
     def _controller_step(self) -> None:
         """Let the controller observe the cache and apply its decision.

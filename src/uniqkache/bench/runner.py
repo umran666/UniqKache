@@ -52,6 +52,7 @@ from uniqkache.offload.tiers import TierManager
 from uniqkache.policies import build_policy
 from uniqkache.prefetch.registry import build_prefetch_policy
 from uniqkache.runtime.generation import GenerationConfig, GenerationEngine, GenerationResult
+from uniqkache.runtime.pressure import MemoryPressureMonitor
 from uniqkache.utils.device import describe_hardware, resolve_device
 from uniqkache.utils.errors import BackendError, ConfigError, UniqKacheError
 from uniqkache.utils.logging import get_logger
@@ -191,6 +192,36 @@ def _make_cache(
     return KVCache(config, policy=policy)
 
 
+def _build_pressure_monitor(spec: RunSpec, cache: KVCache) -> MemoryPressureMonitor | None:
+    """Build the memory-pressure monitor when the spec asks for adaptive eviction.
+
+    The ceiling is the spec's *device* byte budget, not the token-budget
+    conversion ``memory_budget_mb`` performs: the monitor measures observed
+    device bytes against a whole-device ceiling, and a cache whose capacity
+    was already derived from that same ceiling could never be tightened
+    further (the arithmetic is inert once ``capacity ==
+    tokens_for_bytes(budget)``). ``device_budget_mb`` is the field that means
+    "the device may hold this many bytes", so it is the one pressure is
+    measured against.
+    """
+    if not spec.adaptive_eviction:
+        return None
+    if spec.device_budget_mb is None:
+        raise ConfigError(
+            "adaptive_eviction needs a device byte budget to measure pressure "
+            "against: set device_budget_mb"
+        )
+    monitor = MemoryPressureMonitor(cache.config, int(spec.device_budget_mb * 1024 * 1024))
+    _log.info(
+        "adaptive eviction on: device byte budget %d, watermarks %.2f/%.2f, min interval %d steps",
+        monitor.device_byte_budget,
+        monitor.low_watermark,
+        monitor.high_watermark,
+        monitor.min_interval,
+    )
+    return monitor
+
+
 def _build_controller(spec: RunSpec) -> AdaptiveController | None:
     """Construct the spec's controller, or ``None`` for a policy-driven run.
 
@@ -198,7 +229,7 @@ def _build_controller(spec: RunSpec) -> AdaptiveController | None:
     budget comes from ``device_budget_mb``. ``allow_recompute`` is explicitly
     False: ``RECOMPUTE`` is in the action vocabulary, but re-running the model
     is the runtime's responsibility and the controller would refuse without a
-    callback — the experiment must not depend on a decision that cannot fire.
+    callback - the experiment must not depend on a decision that cannot fire.
     """
     if spec.controller is None:
         return None
@@ -449,6 +480,7 @@ def _run_single_spec(
         allocation_strategy = build_allocation_strategy(spec.capacity_schedule)
 
     controller = _build_controller(spec)
+    pressure_monitor = _build_pressure_monitor(spec, gen_cache)
 
     engine = GenerationEngine(
         built.model,
@@ -456,6 +488,7 @@ def _run_single_spec(
         GenerationConfig(max_new_tokens=spec.max_new_tokens, seed=spec.seed),
         allocation_strategy=allocation_strategy,
         controller=controller,
+        pressure_monitor=pressure_monitor,
     )
     generation = engine.generate(prompt)
     latencies = LatencyStats.from_samples(generation.per_step_ms)
@@ -598,6 +631,13 @@ def _run_single_spec(
             [decision.to_dict() for decision in controller.trace]
             if controller is not None
             else None
+        ),
+        # The realised budget over time, not just the initial value: a run
+        # that tightened itself mid-decode must be able to show it.
+        adaptation_events=(
+            [event.to_dict() for event in pressure_monitor.events]
+            if pressure_monitor is not None
+            else []
         ),
         capacity=gen_cache.capacity,
         capacity_schedule=spec.capacity_schedule,
@@ -873,6 +913,7 @@ def run_spec(
         policy=base_record.policy,
         policy_config=base_record.policy_config,
         controller_trace=base_record.controller_trace,
+        adaptation_events=base_record.adaptation_events,
         capacity=base_record.capacity,
         attention_sinks=base_record.attention_sinks,
         memory_budget_mb=base_record.memory_budget_mb,

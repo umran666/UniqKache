@@ -137,6 +137,17 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: no prefetch, until a measurement shows it pays for itself.",
     )
     parser.add_argument(
+        "--adaptive-eviction",
+        action="store_true",
+        help="Recompute the token budget from observed device memory pressure "
+        "between decode steps, instead of holding the initial budget fixed. "
+        "Requires --device-budget-mb (the device-wide byte ceiling pressure is "
+        "measured against); a run whose cache would grow past that ceiling "
+        "tightens itself instead of exhausting the device. Every tightening is "
+        "recorded in the record's adaptation_events, so the realised budget "
+        "over time is auditable.",
+    )
+    parser.add_argument(
         "--controller",
         default=None,
         choices=["adaptive"],
@@ -293,6 +304,7 @@ def _spec_from_args(args: argparse.Namespace) -> RunSpec:
         device_budget_mb=args.device_budget_mb,
         prefetch_policy=args.prefetch_policy,
         controller=args.controller,
+        adaptive_eviction=args.adaptive_eviction,
         attention_sinks=args.attention_sinks,
         attention_access_threshold=args.attention_access_threshold,
         precision=args.precision,
@@ -374,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
                 device_budget_mb=args.device_budget_mb,
                 prefetch_policy=args.prefetch_policy,
                 controller=args.controller,
+                adaptive_eviction=args.adaptive_eviction,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

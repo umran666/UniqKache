@@ -166,6 +166,10 @@ class BenchmarkRecord:
     # run the top-level trace is the first repetition's; every repetition's
     # trace is inside ``repetition_records``.
     controller_trace: list[dict[str, Any]] | None = None
+    # Budget tightenings the memory-pressure monitor applied between decode
+    # steps: the *realised* budget over time, not just the initial value.
+    # Empty when no monitor ran or pressure never crossed the watermark.
+    adaptation_events: list[dict[str, Any]] = field(default_factory=list)
     # The budget the user asked for, in MiB, when the capacity was derived from
     # bytes rather than stated in tokens. `capacity` alone cannot distinguish
     # "asked for 4096 tokens" from "asked for 512 MiB and got 4096 tokens".

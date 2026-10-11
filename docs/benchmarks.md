@@ -102,6 +102,7 @@ python -m uniqkache.bench --list-policies    # what is registered, and the alias
 | `--device-budget-mb` | — | Ceiling on **device-resident** cache bytes, in MiB, for offload planning. Unlike `--memory-budget-mb` it does not set the token capacity: offloading moves bytes to the host tier without discarding tokens, so it is also valid with `--policy full_cache`. The plan and its outcome are recorded in `policy_config.tier_actions`. |
 | `--prefetch-policy` | off | `none`, `next_layer` or `recency`. Applied after offload planning, in serving order: shed to the tier budget, then bring back what the next layer needs. |
 | `--controller` | off | `adaptive`: drive the run with `AdaptiveController`, consulted after prefill and between decode steps. Its memory budget is `--device-budget-mb`. Every decision is recorded in `controller_trace`. |
+| `--adaptive-eviction` | off | Recompute the token budget from observed device memory pressure between decode steps. Requires `--device-budget-mb`. Every tightening is recorded in `adaptation_events`. |
 | `--output-dir` | `experiments/results` | Where results go. |
 | `--config` | — | Run an experiment config instead of a single ad-hoc run. |
 | `--sweep` | off | Expand into the 100/75/50/25/10 % retention sweep. |
@@ -221,6 +222,29 @@ when reading the record:
   free" — and the record's `notes` field carries that caveat whenever a non-retain decision
   fired. See `docs/research.md`, R5.
 
+### Adaptive eviction budgets
+
+`--adaptive-eviction` adds the feedback loop the static budget lacks: instead of holding the
+initial token capacity for the whole run, a `MemoryPressureMonitor` observes device memory
+between decode steps and recomputes the capacity through `tokens_for_bytes` when pressure
+crosses the high watermark. What it records and what it does not:
+
+- **What it measures.** On CUDA, the platform's own allocator counter (`current_memory_bytes`),
+  which includes weights and activations — so the non-cache share is reserved before the cache
+  gets the remainder of the ceiling. On CPU that counter is unavailable by design (`None`, not
+  `0`), so pressure is measured on the cache's own footprint, which is the only figure the
+  machine can report.
+- **Which budget it measures against.** `--device-budget-mb`, the device-wide ceiling —
+  deliberately not `--memory-budget-mb`, whose whole job is to derive the initial capacity.
+  Measuring against a budget the capacity was already derived from could never tighten.
+- **Shrink only, and at most every `min_interval` steps.** Growth is not implemented: a monitor
+  that expands would oscillate (expand, breach, shrink, relax, expand) and every oscillation is
+  a wasted eviction. Shrink-only is stable by construction, and the tightened budget aims below
+  the high watermark so the next observation is quiet.
+- **The realised budget is on the record.** `adaptation_events` lists every tightening — step,
+  observed bytes, pressure, old and new capacity — so "the budget was 16 the whole run" is
+  checkable rather than assumed.
+
 The logical, uncompressed payload identity (the historical R3 figures used this accounting):
 
 ```
@@ -296,7 +320,8 @@ irreproducible result is not evidence.
 
 **Cache** — `policy`, `policy_config`, `capacity`, `attention_sinks`, `compressor`,
 `controller_trace` (one entry per controller decision; `null` when no controller ran —
-`[]` would claim a controller that decided nothing)
+`[]` would claim a controller that decided nothing), `adaptation_events` (one entry per
+pressure-driven budget tightening; the realised budget over time)
 
 **Hardware** — `device`, `gpu_name`, `gpu_total_memory_bytes`, `gpu_compute_capability`
 

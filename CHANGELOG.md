@@ -17,6 +17,21 @@ Two project-specific conventions:
 
 ### Added
 
+- **Adaptive eviction budgets driven by real device memory pressure (issue #33).** The token
+  budget was fixed at config time and `PolicyState.memory_pressure` was derived from that static
+  budget; nothing reacted to actual device memory approaching a ceiling.
+  `MemoryPressureMonitor` observes device bytes between decode steps and recomputes the token
+  capacity through `tokens_for_bytes` when pressure crosses the high watermark, so a run whose
+  cache would grow past the ceiling tightens itself instead of exhausting the device. On CUDA
+  the observable is the platform's own allocator counter (weights and activations included, so
+  the non-cache share is reserved first); on CPU that counter is `None` by design, and pressure
+  is measured on the cache's own footprint — the only figure the machine can report. The ceiling
+  is `device_budget_mb`, not `memory_budget_mb`: measuring against the budget the capacity was
+  already derived from could never tighten. Two stability rules: shrink-only (growth would
+  oscillate, and every oscillation is a wasted eviction) and a minimum interval between
+  adaptations. Every tightening lands in the record's `adaptation_events` — step, observed
+  bytes, pressure, old and new capacity — so the *realised* budget over time is auditable, not
+  just the initial value. `RunSpec.adaptive_eviction` / `--adaptive-eviction` enable it.
 - **A controller-driven run mode, with the decision trace on the record (issue #9).**
   `controllers/adaptive.py` was a complete, unit-tested five-rule decision chain that nothing
   in `bench/` instantiated, so its hypotheses were untestable as shipped. `RunSpec` gained

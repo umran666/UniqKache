@@ -17,6 +17,18 @@ Two project-specific conventions:
 
 ### Added
 
+- **The HF adapter's mirror overhead is quantified on a real model (issue #12).** The
+  `mirror_overhead_bytes` field was added and populated but never measured, so a reader
+  comparing `cache_bytes_total` against the model's actual cache had no way to separate the
+  two. The committed real-model run (`hf-internal-testing/tiny-random-LlamaForCausalLM`,
+  context 32, seed 42) records **0** on both rows: on that stack `UniqKacheHFCache` subclasses
+  `transformers.cache_utils.Cache` and the model updates the adapter in place, so no second
+  copy exists and `cache_bytes_total` is already the model-native footprint. The field is
+  nonzero only on stacks where the model replaces the cache object it was given (the
+  transformers ≤ 4.48 path), where each copy holds one full K/V set. `docs/benchmarks.md` now
+  states which figure to use and why, and both paths are pinned by tests: a stub model that
+  adopts the adapter leaves the mirror at zero; one that returns a foreign cache mirrors the
+  new rows and counts them.
 - **Adaptive eviction budgets driven by real device memory pressure (issue #33).** The token
   budget was fixed at config time and `PolicyState.memory_pressure` was derived from that static
   budget; nothing reacted to actual device memory approaching a ceiling.

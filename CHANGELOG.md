@@ -17,6 +17,19 @@ Two project-specific conventions:
 
 ### Added
 
+- **The Hugging Face backend's pure-logic paths are covered without the optional extra
+  (issue #11).** `transformers` is an optional extra and CI installs `.[dev]` only, so this
+  module is imported on every run without it — but nothing pinned that contract. The
+  `tests/unit/test_hf_backend.py` suite now reloads the backend against a deliberately failing
+  `import transformers` and asserts the module-level fallback engages, the pure logic
+  (stub-model construction, cache adapter wrapping, K/V extraction) still runs, and the
+  missing-extra error names the install command rather than surfacing a bare
+  `ModuleNotFoundError`. The `_require_transformers` raise loses its `# pragma: no cover`.
+  The original acceptance criterion — a bounded cache raises `HF_EVICTION_NOT_SUPPORTED` — is
+  obsolete: bounded HF caches are supported end-to-end since `UniqKacheLayer` /
+  `UniqKacheHFCache`, and what the criterion protected (an unsupported configuration raising
+  rather than silently running a full cache and reporting it as eviction) is now pinned by the
+  eviction tests, which assert bounded occupancy on a real architecture.
 - **The HF adapter's mirror overhead is quantified on a real model (issue #12).** The
   `mirror_overhead_bytes` field was added and populated but never measured, so a reader
   comparing `cache_bytes_total` against the model's actual cache had no way to separate the

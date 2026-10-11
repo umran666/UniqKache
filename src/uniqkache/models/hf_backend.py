@@ -40,7 +40,7 @@ def _require_transformers() -> Any:
     """Import transformers, or explain how to install it."""
     try:
         import transformers
-    except ImportError as exc:  # pragma: no cover - depends on environment
+    except ImportError as exc:
         raise BackendError(
             "the Hugging Face backend requires the 'hf' extra. Install with:\n"
             '    pip install -e ".[hf]"'

@@ -2,11 +2,19 @@
 
 The HF backend supports both full-cache and bounded evicting cache policies
 via UniqKacheHFCache and UniqKacheLayer.
+
+`transformers` is an optional extra: CI installs `.[dev]` and runs this
+module without it, so nothing here may require the extra, a download, or the
+network. `TestWithoutTransformers` pins that property mechanically â€” the pure
+logic runs with the import made to fail, and the missing-extra error names the
+install command.
 """
 
 from __future__ import annotations
 
 import gc
+import importlib
+import sys
 import weakref
 
 import pytest
@@ -612,3 +620,60 @@ class TestOfflineResolution:
         assert "local_files_only=True" in str(excinfo.value)
         assert "org/missing-model" in str(excinfo.value)
         assert isinstance(excinfo.value.__cause__, OSError)
+
+
+class TestWithoutTransformers:
+    """The suite must pass with the optional extra absent, and say how to add it.
+
+    ``transformers`` is an optional extra, so CI never installs it: this module
+    is imported on every run regardless. These tests make the import fail on
+    purpose — a ``None`` entry in ``sys.modules`` turns ``import transformers``
+    into an ``ImportError`` — reload the backend against that failure, and pin
+    both halves of the contract: the pure logic still works, and the
+    missing-extra error names the install command instead of a bare
+    ``ModuleNotFoundError``.
+    """
+
+    def test_pure_logic_runs_with_the_import_failing(self, monkeypatch):
+        import uniqkache.models.hf_backend as hf_module
+
+        monkeypatch.setitem(sys.modules, "transformers", None)
+        try:
+            reloaded = importlib.reload(hf_module)
+            # The module-level fallback took effect rather than the import
+            # error propagating: the module is importable without the extra.
+            assert reloaded._CacheBase is object
+
+            # The pure-logic paths still run: construction from a stub model,
+            # the adapter wrapping a cache, and K/V extraction.
+            backend = reloaded.HFBackend(_StubModel(), identifier="stub/no-transformers")
+            cache = KVCache(backend.cache_config(capacity=4), policy=SlidingWindowPolicy())
+            adapter = reloaded.UniqKacheHFCache(cache)
+            assert len(adapter) == 2
+            assert adapter.get_seq_length(0) == 0
+            assert adapter.get_max_length() == 4
+
+            keys = torch.zeros(1, 2, 3, 8)
+            values = torch.zeros(1, 2, 3, 8)
+            extracted_k, extracted_v = reloaded._extract_layer_kv(
+                type("Cache", (), {"layers": [(keys, values)]})(), 0
+            )
+            assert extracted_k is keys and extracted_v is values
+        finally:
+            # Restore the real module state even if an assertion above failed,
+            # so later tests keep the transformers-backed classes.
+            monkeypatch.undo()
+            importlib.reload(hf_module)
+
+    def test_missing_extra_error_names_the_install_command(self, monkeypatch):
+        import uniqkache.models.hf_backend as hf_module
+
+        monkeypatch.setitem(sys.modules, "transformers", None)
+        try:
+            reloaded = importlib.reload(hf_module)
+            with pytest.raises(BackendError, match="requires the 'hf' extra") as excinfo:
+                reloaded._require_transformers()
+            assert 'pip install -e ".[hf]"' in str(excinfo.value)
+        finally:
+            monkeypatch.undo()
+            importlib.reload(hf_module)

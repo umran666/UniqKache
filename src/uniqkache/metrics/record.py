@@ -159,6 +159,13 @@ class BenchmarkRecord:
     capacity_schedule: str | None = None
     attention_sinks: int = 0
     compressor: str | None = None
+    # The controller's decision trace, one entry per decision point, when a
+    # controller drove the run. ``None`` when no controller ran: a trace of
+    # ``[]`` would claim a controller that decided nothing, and the vocabulary
+    # has an explicit ``retain`` for deciding nothing. On a multi-repetition
+    # run the top-level trace is the first repetition's; every repetition's
+    # trace is inside ``repetition_records``.
+    controller_trace: list[dict[str, Any]] | None = None
     # The budget the user asked for, in MiB, when the capacity was derived from
     # bytes rather than stated in tokens. `capacity` alone cannot distinguish
     # "asked for 4096 tokens" from "asked for 512 MiB and got 4096 tokens".

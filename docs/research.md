@@ -119,6 +119,7 @@ produced by an ad-hoc command whose arguments are lost.
 | --- | --- | --- |
 | `experiments/configs/correctness.json` | Non-evicting budget must reproduce full cache exactly | Runs; passes |
 | `experiments/configs/sweep_policies.json` | Cross-policy comparison at a fixed 25% budget | Runs |
+| `experiments/configs/adaptive_controller.json` | Controller-driven run vs best fixed-weight `token_importance` at equal token budget (Open Question 6) | Runs; mechanism validated, no win claimed (R5) |
 | `experiments/configs/offload_prefetch.json` | Offload to a device byte ceiling, then prefetch the next layer (Open Question 5) | Declared; blocked on CUDA hardware (F15) |
 | `--sweep` (CLI) | Retention sweep at 100/75/50/25/10% | Runs |
 
@@ -218,6 +219,48 @@ What this supports, and what it does not:
   coincidence. See F10.
 - **Nothing here transfers to a real model.** The model is randomly initialised; see
   Limitations.
+
+### R5 — The adaptive controller has a runnable path, and it is not yet a win (issue #9)
+
+`controllers/adaptive.py` was a complete, unit-tested decision chain that nothing in `bench/`
+instantiated, so H7/H8 were untestable as shipped. A controller-driven run mode now exists
+(`RunSpec.controller = "adaptive"`, `--controller`): the engine consults the controller once
+after prefill and between every pair of decode steps, and the `Decision` trace is recorded in
+`controller_trace`.
+
+`experiments/configs/adaptive_controller.json` — `synthetic:tiny`, context 512, 8 generated
+tokens, batch 1, float32, CPU, greedy, seed 0. Both bounded runs carry the same token budget
+(128 per layer); the controller run additionally carries a 0.125 MiB device byte ceiling, half
+the 0.25 MiB its tokens natively occupy, which is what gives the controller a decision to
+make. `allow_recompute=False`: a decision that cannot fire must not appear in the trace.
+
+| Run | Token budget | Device ceiling | Cache bytes | Ratio | Perplexity | quality_delta |
+| --- | --- | --- | --- | --- | --- | --- |
+| `full_cache` | — | — | 2,097,152 | 1.000 | 521.901917 | reference |
+| `token_importance` | 128/layer | — | 262,144 | 1.000 | 520.556580 | +1.345337 |
+| + `adaptive` controller | 128/layer | 0.125 MiB | 71,936 | 3.644 | 520.556580 | +1.345337 |
+
+What happened: the memory rule bound at all 8 decision points, and on single-tier hardware the
+controller's least-lossy *feasible* action was `compress` — offload is infeasible when there is
+no cheaper tier, and the controller now refuses to choose an action the runtime cannot
+perform. The recorded cache bytes fell 3.64× against the fixed-weight run at the same token
+budget.
+
+What this does **not** establish:
+
+- **The action's quality cost was not measured.** Quality is bit-identical between the two
+  bounded runs because the quality pass runs its own cache, configured identically *without
+  the controller*, so `quality_value` never prices the compression. The record's `notes` field
+  says so. Pricing the actions needs the quality evaluator to run them — that is the next
+  step, not a result.
+- **Only one branch of the loss order was exercised.** With no second tier, `offload` is
+  inadmissible; the offload → compress → evict ordering is therefore untested, and so is H8.
+- Random weights, one seed, and no latency claim (F10).
+
+So the honest answer to Open Question 6 is: the machinery is now runnable and auditable — the
+trace on the record is the evidence — but this experiment does not show it beats the best
+fixed-weight `token_importance` at equal budget. It met a tighter byte ceiling at an
+unmeasured quality cost. H7 and H8 remain **not yet tested**.
 
 ---
 
@@ -669,6 +712,10 @@ failure mode again, one level more expensive to detect.
 6. **Does pressure-aware weighting help, or is a fixed weight enough?** H7 is untested. If
    `adaptive` does not beat the best fixed-weight `token_importance` configuration at equal
    budget, the adaptive machinery is unjustified complexity, and the honest move is to say so.
+   The *controller* variant of the question now has a runnable path and a first measurement
+   (R5): it compresses under a byte ceiling the fixed-weight run does not carry, at a quality
+   cost this experiment did not price. Settling the question needs a quality evaluator that
+   runs the controller's actions, and a second memory tier for the offload branch.
 7. **What does recomputation actually cost?** `RECOMPUTE` is in the action vocabulary and the
    controller refuses to apply it without a `recompute_fn`, but no recompute strategy has been
    measured against eviction or offloading.

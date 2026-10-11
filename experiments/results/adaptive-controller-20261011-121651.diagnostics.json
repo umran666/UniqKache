@@ -1,0 +1,16 @@
+{
+  "problems": {
+    "full_cache-synthetic:tiny-512-65d82c94": [
+      "working tree was dirty; the recorded commit does not describe the code that ran",
+      "quality was measured on a randomly-initialised model. That is a valid diagnostic of cache behaviour but must not be reported as model quality; see docs/research.md."
+    ],
+    "token_importance-synthetic:tiny-512-ccf40492": [
+      "working tree was dirty; the recorded commit does not describe the code that ran",
+      "quality was measured on a randomly-initialised model. That is a valid diagnostic of cache behaviour but must not be reported as model quality; see docs/research.md."
+    ],
+    "token_importance-synthetic:tiny-512-f7cac699": [
+      "working tree was dirty; the recorded commit does not describe the code that ran",
+      "quality was measured on a randomly-initialised model. That is a valid diagnostic of cache behaviour but must not be reported as model quality; see docs/research.md."
+    ]
+  }
+}

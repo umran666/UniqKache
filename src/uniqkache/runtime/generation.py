@@ -41,6 +41,8 @@ from uniqkache.models.base import LanguageModel
 
 if TYPE_CHECKING:
     from uniqkache.allocation.base import BaseAllocationStrategy
+    from uniqkache.controllers.adaptive import AdaptiveController
+from uniqkache.controllers.types import ControllerState
 from uniqkache.utils.device import (
     peak_memory_bytes,
     reset_peak_memory,
@@ -137,6 +139,15 @@ class GenerationEngine:
         only for policies that consume them (:attr:`uses_attention`), since
         materialising attention weights costs memory proportional to the context
         length and would otherwise distort the very measurements we take.
+    controller:
+        Optional :class:`~uniqkache.controllers.adaptive.AdaptiveController`.
+        When given, it is consulted once after prefill and between every pair
+        of decode steps: it observes a
+        :class:`~uniqkache.controllers.types.ControllerState` built from the
+        cache, chooses an action, and the action is applied to the cache. Its
+        decisions accumulate in ``controller.trace`` for the record.
+        Adaptation runs *after* a step's timing is captured, so its cost is
+        charged to the following step rather than hidden from the measurement.
     """
 
     def __init__(
@@ -147,11 +158,13 @@ class GenerationEngine:
         *,
         record_attention: bool | None = None,
         allocation_strategy: BaseAllocationStrategy | None = None,
+        controller: AdaptiveController | None = None,
     ) -> None:
         self.model = model
         self.cache = cache
         self.config = config or GenerationConfig()
         self.allocation_strategy = allocation_strategy
+        self.controller = controller
 
         if record_attention is None:
             policy = cache.policy
@@ -191,6 +204,9 @@ class GenerationEngine:
         prompt_tokens = int(input_ids.shape[1])
         generated: list[torch.Tensor] = []
         per_step_ms: list[float] = []
+        # The controller's latency signal reads this same list, so its
+        # "observed time so far" is exactly what the timing columns report.
+        self._per_step_samples: list[float] = per_step_ms
 
         # ---- prefill -----------------------------------------------------
         synchronize(self.device)
@@ -209,6 +225,10 @@ class GenerationEngine:
                     attention_sinks=self.cache.config.attention_sinks,
                 )
                 self.cache.set_capacity(new_caps)
+
+        # Consult the controller once the prefill has populated the cache, so
+        # its first decision sees real occupancy rather than an empty store.
+        self._controller_step()
 
         next_token = input_ids[:, :0]
         hit_stop = False
@@ -235,6 +255,10 @@ class GenerationEngine:
             next_token = self._select_token(step_logits[:, -1, :])
             generated.append(next_token)
             self.cache.advance()
+
+            # Between steps, not inside the timed region: the adaptation's
+            # cost is charged to the following step rather than hidden.
+            self._controller_step()
 
             if self.config.stop_token_id is not None and bool(
                 (next_token == self.config.stop_token_id).all()
@@ -295,6 +319,49 @@ class GenerationEngine:
                 "input tokens; the model backend is inconsistent"
             )
         return logits, weights
+
+    def _controller_step(self) -> None:
+        """Let the controller observe the cache and apply its decision.
+
+        The controller sees only measurements: occupancy, per-tier bytes, the
+        budgets from its constraints, and the observed mean decode time so far.
+        It gets no prediction and no access to the model, which is what keeps
+        its decisions auditable. ``recompute`` decisions cannot occur here —
+        the runner constructs the controller with ``allow_recompute=False``
+        because re-running the model is the runtime's job, not the cache's.
+        """
+        if self.controller is None:
+            return
+
+        stats = self.cache.stats()
+        cursor = 0
+        latency_budget = self.controller.constraints.latency_budget_ms
+        state = ControllerState(
+            layer_idx=cursor,
+            step=self.cache.step,
+            num_tokens=self.cache.num_tokens(cursor),
+            capacity=self.cache.config.capacity_for_layer(cursor),
+            device_bytes=stats.bytes_on_device,
+            offloaded_bytes=stats.bytes_offloaded,
+            device_byte_budget=self.controller.constraints.memory_budget_bytes,
+            latency_budget_ms=latency_budget,
+            recent_tpot_ms=self._recent_tpot_ms(),
+            quality_signal=None,
+            num_layers=self.cache.num_layers,
+            is_offloaded=self.cache.store.layer(cursor).is_offloaded,
+            # The controller offloads to the host tier, so a cheaper tier
+            # exists exactly when the compute device is not the host itself.
+            can_offload=self.device.type != "cpu",
+        )
+        decision = self.controller.decide(state)
+        self.controller.apply(self.cache, decision)
+
+    def _recent_tpot_ms(self) -> float | None:
+        """Mean observed decode-step time so far, or None before any step."""
+        samples = self._per_step_samples
+        if not samples:
+            return None
+        return sum(samples) / len(samples)
 
     def _absorb_attention(self, weights: list[torch.Tensor] | None, *, mode: str) -> None:
         """Feed per-layer attention weights into the cache's signal bookkeeping."""

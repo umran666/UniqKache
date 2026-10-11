@@ -17,6 +17,24 @@ Two project-specific conventions:
 
 ### Added
 
+- **A controller-driven run mode, with the decision trace on the record (issue #9).**
+  `controllers/adaptive.py` was a complete, unit-tested five-rule decision chain that nothing
+  in `bench/` instantiated, so its hypotheses were untestable as shipped. `RunSpec` gained
+  `controller` (`adaptive`), the CLI gained `--controller`, and `GenerationEngine` consults
+  the controller once after prefill and between every pair of decode steps. Every decision —
+  action, binding constraint, reason, rejected alternatives, derived quality risk — lands in
+  the record's `controller_trace`, and `policy_config.controller` carries the constraints
+  (including the prototype's own `"validated": False`). The controller's memory budget comes
+  from `device_budget_mb`, and `allow_recompute` is explicitly False: a decision that cannot
+  fire must not appear in the trace. `ControllerState` gained `can_offload`, so the controller
+  refuses to choose an action the runtime cannot perform — on a single-tier device it
+  compresses instead of recording offloads that would every one no-op.
+  `experiments/configs/adaptive_controller.json` compares the controller against the best
+  fixed-weight `token_importance` at equal token budget; the result is written up as R5.
+  Headline: the trace is now auditable and the controller compressed under a byte ceiling the
+  fixed-weight run does not carry, but the quality pass does not price the controller's
+  actions and the offload branch is untestable on single-tier hardware — so the run does
+  **not** establish that the machinery beats the fixed baseline, and Open Question 6 says so.
 - **Token-level (intra-layer) offload granularity (issue #30).** `KVCache.offload()` moved a
   whole layer at once — all-resident or all-offloaded, so trade-offs were lumpy and prefetch
   could only fetch whole layers. `LayerStorage` now supports split residency: slots

@@ -1,0 +1,46 @@
+{
+  "name": "adaptive-controller",
+  "description": "Does the AdaptiveController earn its complexity? (docs/research.md Open Question 6, issue #9.) Compares the controller-driven run against the best fixed-weight token_importance run at an EQUAL TOKEN BUDGET (capacity 128/layer, keep_ratio 0.25 at context 512), plus the full_cache reference for quality_delta. The controller run additionally carries a device byte ceiling of 0.125 MiB -- half of the 0.25 MiB its 128 tokens/layer natively occupy -- which is what gives the controller a decision to make: without a binding constraint every decision would be a trivial retain. allow_recompute is False (the runner sets it explicitly): RECOMPUTE is in the action vocabulary but re-running the model is the runtime's job, and a decision that cannot fire must not appear in the trace. On single-tier (CPU) hardware the controller's least-lossy over-budget action, offload, is infeasible, so the trace shows compress; on a CUDA machine the same config exercises offload first. Known caveat, same as --compressor: the quality pass runs its own uncompressed cache, so quality does not price the controller's compression.",
+  "runs": [
+    {
+      "model": "synthetic:tiny",
+      "policy": "full_cache",
+      "context_length": 512,
+      "attention_sinks": 0,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "reference: no eviction, no compression, no offload"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "token_importance",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "notes": "best fixed-weight baseline at the equal token budget (capacity 128/layer)"
+    },
+    {
+      "model": "synthetic:tiny",
+      "policy": "token_importance",
+      "context_length": 512,
+      "keep_ratio": 0.25,
+      "attention_sinks": 4,
+      "max_new_tokens": 8,
+      "task": "generation",
+      "seed": 0,
+      "measure_quality": true,
+      "quality_chunk_size": 1,
+      "device_budget_mb": 0.125,
+      "controller": "adaptive",
+      "notes": "RESEARCH PROTOTYPE, not a validated method. Same token budget as the fixed-weight row plus a 0.125 MiB device byte ceiling; the Decision trace is in the record's controller_trace. allow_recompute=False."
+    }
+  ]
+}

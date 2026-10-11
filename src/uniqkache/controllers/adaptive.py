@@ -33,7 +33,8 @@ Evaluated in order; the first rule that applies wins.
    signal below the floor, lossy actions are removed from consideration.
 3. **Over memory budget** — pick the least lossy action that fits, preferring
    ``offload`` → ``compress`` → ``recompute`` → ``evict``, and dropping
-   candidates that would breach the latency budget.
+   candidates that would breach the latency budget **or that the runtime
+   cannot perform** (an offload with no cheaper tier to move to).
 4. **Latency pressure only** — nothing to do about memory; retain.
 5. **Default** — retain.
 
@@ -246,10 +247,21 @@ class AdaptiveController:
         return None  # unreachable: EVICT is always admissible
 
     def _admissible_actions(self, state: ControllerState) -> list[ActionKind]:
-        """Least-lossy-first list of actions permitted in this state."""
+        """Least-lossy-first list of actions permitted in this state.
+
+        Two filters apply before the loss order is walked:
+
+        * ``recompute`` only when :attr:`allow_recompute` is set;
+        * ``offload`` only when the runtime actually has a cheaper tier to
+          move bytes to (``state.can_offload``). Choosing an action the
+          runtime cannot perform would fill the trace with infeasible
+          decisions while the budget stays breached.
+        """
         out: list[ActionKind] = []
         for kind in _LOSS_ORDER:
             if kind is ActionKind.RECOMPUTE and not self.allow_recompute:
+                continue
+            if kind is ActionKind.OFFLOAD and not state.can_offload:
                 continue
             # Byte-moving and byte-rewriting actions cost time; under high
             # latency pressure only eviction (which is free) remains.

@@ -81,6 +81,14 @@ class RunSpec:
         shed to the tier budget, then bring back what the next layer needs.
         ``None`` means no prefetch, which is the correct default until a
         measurement shows it pays for itself.
+    controller:
+        Name of an action-selection controller to drive the run. ``adaptive``
+        consults :class:`~uniqkache.controllers.adaptive.AdaptiveController`
+        once after prefill and between decode steps, recording every decision
+        in the record's ``controller_trace``. Its memory budget comes from
+        ``device_budget_mb`` (a byte ceiling is the controller's native unit);
+        ``allow_recompute`` is False, because re-running the model is the
+        runtime's job and the controller refuses to fake it.
     """
 
     model: str = "synthetic:tiny"
@@ -98,6 +106,7 @@ class RunSpec:
     memory_budget_mb: float | None = None
     device_budget_mb: float | None = None
     prefetch_policy: str | None = None
+    controller: str | None = None
     attention_sinks: int = 0
     attention_access_threshold: float = 1e-6
     precision: str = "float32"
@@ -155,6 +164,11 @@ class RunSpec:
                     f"unknown prefetch_policy {self.prefetch_policy!r}. "
                     f"Available: {', '.join(available_prefetch_policies())}"
                 )
+        if self.controller is not None and self.controller != "adaptive":
+            # One controller is implemented; an unknown name must fail here
+            # rather than silently running without one and recording a trace
+            # of nothing.
+            raise ConfigError(f"unknown controller {self.controller!r}. Available: adaptive")
         if self.attention_sinks < 0:
             raise ConfigError(f"attention_sinks must be >= 0, got {self.attention_sinks}")
         if self.batch_size < 1:

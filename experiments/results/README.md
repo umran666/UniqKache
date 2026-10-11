@@ -95,6 +95,33 @@ was measured; they are **not** reported as results. See `docs/research.md`, F10.
 Memory is arithmetic and exact. Quality is bit-reproducible — every perplexity value here is
 identical, digit for digit, to the two superseded sweeps below.
 
+### `adaptive-controller-<timestamp>.*`
+
+**Backs:** R5 in `docs/research.md` (Open Question 6, issue #9).
+
+`experiments/configs/adaptive_controller.json` — `synthetic:tiny`, context 512, 8 generated
+tokens, batch 1, float32, **CPU**, greedy, seed 0. Both bounded runs carry the same token budget
+(128 per layer); the controller run additionally carries a 0.125 MiB device byte ceiling — half
+the 0.25 MiB its tokens natively occupy — which is what gives the controller a decision to make.
+
+| Run | Token budget | Device ceiling | Cache bytes | Ratio | Perplexity | quality_delta |
+| --- | --- | --- | --- | --- | --- | --- |
+| `full_cache` | — | — | 2,097,152 | 1.000 | 521.901917 | reference |
+| `token_importance` | 128/layer | — | 262,144 | 1.000 | 520.556580 | +1.345337 |
+| + `adaptive` controller | 128/layer | 0.125 MiB | 71,936 | 3.644 | 520.556580 | +1.345337 |
+
+The controller's memory rule bound at all 8 decision points (once after prefill, once between
+each pair of decode steps); with no cheaper tier its least-lossy feasible action was `compress`,
+and the recorded cache bytes fell 3.64× against the fixed-weight run at the same token budget.
+The full decision trace is in each record's `controller_trace`.
+
+**Quality is identical between the two bounded runs, and that is not a result about the
+controller.** The quality pass runs its own cache, configured identically but *without* the
+controller, so `quality_value` measures the policy and never prices the controller's
+compression. Each affected record's `notes` field carries the caveat. What this run
+establishes is that the machinery is runnable and auditable — not that it beats the fixed-weight
+baseline (see R5's list of what it does not establish).
+
 ## Superseded results
 
 Kept because each one documents why it is not current. No number from any of them should be

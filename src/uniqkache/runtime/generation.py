@@ -385,6 +385,12 @@ class GenerationEngine:
             # The controller offloads to the host tier, so a cheaper tier
             # exists exactly when the compute device is not the host itself.
             can_offload=self.device.type != "cpu",
+            # A COMPRESS decision can only change bytes while some layer is
+            # initialized and still uncompressed (issue #122).
+            can_compress=any(
+                layer.is_initialized and not layer.is_compressed
+                for layer in self.cache.store.layers
+            ),
         )
         decision = self.controller.decide(state)
         self.controller.apply(self.cache, decision)

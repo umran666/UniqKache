@@ -181,6 +181,43 @@ class TestDecisionRules:
         assert decision.kind is ActionKind.COMPRESS
         assert decision.binding_constraint == "memory"
 
+    def test_rule3_never_chooses_an_infeasible_compress(self):
+        """Issue #122: once every layer is compressed, COMPRESS is a no-op.
+
+        ``can_compress=False`` must push the loss order past COMPRESS to a
+        feasible action, exactly as ``can_offload=False`` does for OFFLOAD.
+        """
+        controller = AdaptiveController()
+        decision = controller.decide(
+            state(
+                device_bytes=4096,
+                device_byte_budget=2048,
+                can_offload=False,
+                can_compress=False,
+            )
+        )
+        assert decision.kind is ActionKind.EVICT
+        assert decision.binding_constraint == "memory"
+
+    def test_rule2_reports_infeasibility_when_compress_cannot_help(self):
+        """Issue #122 under MIN_COST_SUBJECT_TO_QUALITY: eviction is refused
+        while quality binds and compression is exhausted, so the controller
+        retains and says why instead of tracing no-op compressions."""
+        controller = AdaptiveController(
+            Constraints(objective=Objective.MIN_COST_SUBJECT_TO_QUALITY, quality_floor=0.9)
+        )
+        decision = controller.decide(
+            state(
+                quality_signal=0.5,
+                device_bytes=4096,
+                device_byte_budget=2048,
+                can_compress=False,
+            )
+        )
+        assert decision.kind is ActionKind.RETAIN
+        assert decision.binding_constraint == "quality"
+        assert "already compressed" in decision.reason
+
     def test_rule3_skips_offload_under_latency_pressure(self):
         """Byte-moving costs time, so under latency pressure it is rejected."""
         controller = AdaptiveController()
@@ -398,6 +435,47 @@ class TestControllerDrivesTheEngine:
         # recording offloads that would every one of them no-op.
         assert controller.trace
         assert all(d.kind is not ActionKind.OFFLOAD for d in controller.trace)
+
+    def test_compress_decisions_stay_feasible_when_all_layers_are_compressed(
+        self, tiny_model
+    ):
+        """Issue #122: with every layer already compressed, a COMPRESS decision
+        would no-op while the budget stays breached. The engine must report
+        ``can_compress=False`` so the loss order falls through to EVICT."""
+        cache = _engine_cache(tiny_model, capacity=8)
+        shape = tiny_model.config.cache_config(
+            capacity=8, attention_sinks=0, dtype=torch.float32, device="cpu"
+        )
+        kv = torch.randn(1, shape.num_kv_heads, 4, shape.head_dim)
+        for layer in range(tiny_model.config.num_layers):
+            cache.append(layer, kv, kv)
+        assert cache.compress() == tiny_model.config.num_layers
+
+        controller = AdaptiveController(Constraints(memory_budget_bytes=64))
+        engine = GenerationEngine(
+            tiny_model, cache, GenerationConfig(max_new_tokens=1), controller=controller
+        )
+        # generate() initialises this before the first controller step; mirror
+        # it so the step can be exercised on a pre-compressed cache directly.
+        engine._per_step_samples = []
+
+        captured: list = []
+        orig_decide = controller.decide
+
+        def recording_decide(state):
+            captured.append(state)
+            return orig_decide(state)
+
+        controller.decide = recording_decide
+        engine._controller_step()
+
+        # The engine told the controller compression is exhausted.
+        assert captured and captured[0].can_compress is False
+        decision = controller.trace[0]
+        # Offload is infeasible on CPU and compress is exhausted: eviction is
+        # the only action that can actually shed bytes.
+        assert decision.kind is ActionKind.EVICT
+        assert decision.binding_constraint == "memory"
 
 
 class TestControllerOnTheRecord:

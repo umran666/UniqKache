@@ -162,6 +162,14 @@ class ControllerState:
         every step is worse than choosing the next action in the loss order,
         and a trace full of infeasible decisions is unauditable. Defaults to
         True so existing callers that never set it keep the prior behaviour.
+    can_compress:
+        Whether at least one initialized cache layer is still uncompressed,
+        i.e. whether a ``compress`` decision could change any bytes.
+        ``KVCache.compress()`` silently skips already-compressed layers, so
+        once every layer is compressed a COMPRESS decision is a no-op that
+        still reports ``status: OK`` while the budget stays breached (issue
+        #122) — the same infeasible-trace failure ``can_offload`` exists to
+        prevent. Defaults to True so existing callers keep prior behaviour.
     """
 
     layer_idx: int
@@ -177,6 +185,7 @@ class ControllerState:
     num_layers: int = 1
     is_offloaded: bool = False
     can_offload: bool = True
+    can_compress: bool = True
 
     @property
     def total_bytes(self) -> int:

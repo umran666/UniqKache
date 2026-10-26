@@ -68,8 +68,11 @@ def test_wrapped_prefetch_never_repeats_layers_or_bytes():
         plan = NextLayerPrefetch(depth=depth, wrap=True).plan(
             cache.store, cursor=2, resident_budget=None
         )
-        assert plan.layers == [0, 1, 2]
-        assert plan.bytes_to_move == cache.store.bytes_total()
+        # Issue #121: the cursor's own layer is never "ahead" of the cursor,
+        # so a wrapped plan holds only the layers strictly before it in
+        # execution order.
+        assert plan.layers == [0, 1]
+        assert plan.bytes_to_move == cache.store.bytes_total() - cache.store.layer(2).bytes()
         budget = cache.store.layer(0).bytes() * 2
         limited = NextLayerPrefetch(depth=depth, wrap=True).plan(cache.store, 2, budget)
         assert limited.layers == [0, 1]

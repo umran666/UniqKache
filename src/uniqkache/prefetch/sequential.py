@@ -47,7 +47,11 @@ class NextLayerPrefetch(BasePrefetchPolicy):
 
         num_layers = len(store)
         candidates: list[int] = []
-        for offset in range(1, min(self.depth, num_layers) + 1):
+        # At most num_layers - 1 layers are ever *ahead* of the cursor; with
+        # wrap=True a depth of num_layers would wrap all the way back to the
+        # cursor's own layer and waste a slot re-fetching the layer being
+        # computed (issue #121).
+        for offset in range(1, min(self.depth, num_layers - 1) + 1):
             idx = cursor + offset
             if idx >= num_layers:
                 if not self.wrap:

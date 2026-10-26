@@ -231,6 +231,31 @@ class TestPrefetchPolicies:
         plan = NextLayerPrefetch(depth=0).plan(populated_store(), cursor=0, resident_budget=None)
         assert plan.is_empty()
 
+    def test_wrapping_lookahead_never_includes_the_cursor_layer(self):
+        """Issue #121: with wrap=True and depth >= num_layers the wrapped range
+        used to reach the cursor's own layer, wasting a depth slot on the layer
+        being computed. At most num_layers - 1 layers are ever ahead."""
+        store = populated_store(num_layers=4)
+        for idx in range(4):
+            store.layer(idx)._offloaded = True  # CPU stand-in for a real offload
+
+        for cursor in (0, 3):
+            plan = NextLayerPrefetch(depth=4, wrap=True).plan(
+                store, cursor=cursor, resident_budget=None
+            )
+            assert cursor not in plan.layers
+            # The three layers strictly ahead, in execution order.
+            assert plan.layers == [(cursor + off) % 4 for off in (1, 2, 3)]
+
+    def test_wrapping_lookahead_still_wraps_below_the_layer_count(self):
+        """The fix caps the lookahead, it does not disable wrapping."""
+        store = populated_store(num_layers=4)
+        for idx in range(4):
+            store.layer(idx)._offloaded = True
+
+        plan = NextLayerPrefetch(depth=2, wrap=True).plan(store, cursor=3, resident_budget=None)
+        assert plan.layers == [0, 1]
+
     def test_negative_depth_is_rejected(self):
         with pytest.raises(ValueError, match="depth must be >= 0"):
             NextLayerPrefetch(depth=-1)

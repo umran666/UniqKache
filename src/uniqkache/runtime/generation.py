@@ -148,8 +148,9 @@ class GenerationEngine:
         :class:`~uniqkache.controllers.types.ControllerState` built from the
         cache, chooses an action, and the action is applied to the cache. Its
         decisions accumulate in ``controller.trace`` for the record.
-        Adaptation runs *after* a step's timing is captured, so its cost is
-        charged to the following step rather than hidden from the measurement.
+        Adaptation runs inside the *following* step's timing window, so its
+        cost is charged to a per-step sample (and therefore to ``tpot_ms``)
+        rather than landing in ``decode_ms`` alone (issue #123).
     pressure_monitor:
         Optional
         :class:`~uniqkache.runtime.pressure.MemoryPressureMonitor`. When
@@ -241,7 +242,11 @@ class GenerationEngine:
         # Consult the controller once the prefill has populated the cache, so
         # its first decision sees real occupancy rather than an empty store.
         # The pressure monitor runs first: a tighter token budget changes what
-        # the controller observes.
+        # the controller observes. The decode clock is already running: this
+        # adaptation's cost belongs to the first decode step's sample, not to
+        # a gap no measurement surface reports (issue #123).
+        decode_start = time.perf_counter()
+        t_step = decode_start
         self._pressure_step()
         self._controller_step()
 
@@ -256,31 +261,36 @@ class GenerationEngine:
             )
 
         # ---- decode ------------------------------------------------------
-        decode_start = time.perf_counter()
         for step in range(1, self.config.max_new_tokens):
             if hit_stop:
                 break
             position = prompt_tokens + step - 1
-            synchronize(self.device)
-            t_step = time.perf_counter()
             step_logits, _ = self._forward(next_token, start_pos=position, is_prefill=False)
             synchronize(self.device)
-            per_step_ms.append((time.perf_counter() - t_step) * 1000.0)
 
             next_token = self._select_token(step_logits[:, -1, :])
             generated.append(next_token)
             self.cache.advance()
 
-            # Between steps, not inside the timed region: the adaptation's
-            # cost is charged to the following step rather than hidden.
-            self._pressure_step()
-            self._controller_step()
-
             if self.config.stop_token_id is not None and bool(
                 (next_token == self.config.stop_token_id).all()
             ):
+                # Generation is over: close this step's sample and stop. There
+                # is no next step to adapt for, and a trailing adaptation
+                # would land in decode_ms with no sample to carry it (#123).
+                per_step_ms.append((time.perf_counter() - t_step) * 1000.0)
                 hit_stop = True
                 break
+
+            # Close this step's sample, then open the next step's timing
+            # window *before* adapting, so the adaptation's cost is charged to
+            # the step it prepares. Every millisecond between decode_start
+            # and the loop's end lands in exactly one sample, which is what
+            # makes decode_ms == sum(per_step_ms) hold by construction (#123).
+            per_step_ms.append((time.perf_counter() - t_step) * 1000.0)
+            t_step = time.perf_counter()
+            self._pressure_step()
+            self._controller_step()
 
         decode_ms = (time.perf_counter() - decode_start) * 1000.0 if per_step_ms else 0.0
         total_ms = prefill_ms + decode_ms

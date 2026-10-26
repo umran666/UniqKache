@@ -373,6 +373,34 @@ class TestControllerDrivesTheEngine:
         # The action actually ran: the generation cache ends compressed.
         assert cache.stats().compression_ratio > 1.0
 
+    def test_adaptation_cost_lands_in_a_per_step_sample(self, tiny_model):
+        """Issue #123: decode_ms and sum(per_step_ms) must agree.
+
+        Adaptation used to run between timed regions, so its cost inflated
+        decode_ms (and deflated tokens_per_second's denominator) while
+        tpot_ms — the mean of the samples — never saw it. The adaptation now
+        runs inside the following step's timing window, so the two surfaces
+        measure the same thing.
+        """
+        cache = _engine_cache(tiny_model, capacity=8)
+        controller = AdaptiveController(Constraints(memory_budget_bytes=64))
+
+        engine = GenerationEngine(
+            tiny_model, cache, GenerationConfig(max_new_tokens=4), controller=controller
+        )
+        result = engine.generate(torch.randint(0, 512, (1, 16)))
+
+        assert controller.trace, "the controller never ran; the test proves nothing"
+        assert result.per_step_ms
+        # decode_ms is stamped after the final sample closes, so it can exceed
+        # the sum only by loop overhead — never by an adaptation's cost.
+        gap_ms = result.decode_ms - sum(result.per_step_ms)
+        assert gap_ms < 0.2 * max(result.decode_ms, 1e-9) + 1.0, (
+            f"decode_ms={result.decode_ms} exceeds sum(per_step_ms)="
+            f"{sum(result.per_step_ms)} by {gap_ms}ms: adaptation cost is "
+            "hidden from the per-step samples again"
+        )
+
     def test_unconstrained_controller_retains_at_every_step(self, tiny_model):
         cache = _engine_cache(tiny_model, capacity=8)
         controller = AdaptiveController()  # no memory budget: nothing binds

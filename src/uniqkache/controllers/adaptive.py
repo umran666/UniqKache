@@ -184,6 +184,26 @@ class AdaptiveController:
             )
 
         if state.latency_pressure < self.latency_pressure_limit:
+            if not state.can_compress:
+                # Every layer is already compressed: COMPRESS would be a no-op
+                # that reports success while the budget stays breached (issue
+                # #122). Eviction is refused because quality is binding, so
+                # retain and report the conflict honestly.
+                return Decision(
+                    kind=ActionKind.RETAIN,
+                    layer_idx=state.layer_idx,
+                    reason=(
+                        f"quality {state.quality_signal:.4f} < floor {floor:.4f} and device "
+                        f"bytes {state.device_bytes} > budget {state.device_byte_budget}, but "
+                        "every layer is already compressed and eviction is refused while "
+                        "quality is binding; retaining and reporting the infeasibility"
+                    ),
+                    binding_constraint="quality",
+                    alternatives=[
+                        "compress (rejected: all layers already compressed)",
+                        "evict (rejected: lossy, quality is binding)",
+                    ],
+                )
             return Decision(
                 kind=ActionKind.COMPRESS,
                 layer_idx=None,
@@ -256,12 +276,18 @@ class AdaptiveController:
           move bytes to (``state.can_offload``). Choosing an action the
           runtime cannot perform would fill the trace with infeasible
           decisions while the budget stays breached.
+        * ``compress`` only when at least one layer is still uncompressed
+          (``state.can_compress``): ``KVCache.compress()`` silently skips
+          already-compressed layers, so a COMPRESS decision with every layer
+          compressed is a no-op claiming success (issue #122).
         """
         out: list[ActionKind] = []
         for kind in _LOSS_ORDER:
             if kind is ActionKind.RECOMPUTE and not self.allow_recompute:
                 continue
             if kind is ActionKind.OFFLOAD and not state.can_offload:
+                continue
+            if kind is ActionKind.COMPRESS and not state.can_compress:
                 continue
             # Byte-moving and byte-rewriting actions cost time; under high
             # latency pressure only eviction (which is free) remains.

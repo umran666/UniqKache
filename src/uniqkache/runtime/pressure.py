@@ -184,7 +184,10 @@ class MemoryPressureMonitor:
             return None
 
         target_cache_bytes = max(0, int(self.device_byte_budget * self.low_watermark) - non_cache)
-        new_capacity = self.config.tokens_for_bytes(target_cache_bytes)
+        # A budget exhausted below one token floors at 1: the cache's own
+        # contract rejects capacity 0 (CacheConfigError), and crashing
+        # generation mid-run is worse than holding a single token over budget.
+        new_capacity = max(1, self.config.tokens_for_bytes(target_cache_bytes))
         if current_capacity is not None and new_capacity >= current_capacity:
             # Already within what the observed bytes allow.
             return None
@@ -242,6 +245,16 @@ class MemoryPressureMonitor:
             total_device_bytes=total_device_bytes,
         )
         if new_capacity is None:
+            return None
+        if new_capacity < 1:
+            # Belt-and-braces: observe() floors at 1, so this should be
+            # unreachable; refuse rather than record an event that
+            # set_capacity could never apply.
+            _log.warning(
+                "memory-pressure adaptation skipped: derived capacity %d is below the "
+                "one-token floor",
+                new_capacity,
+            )
             return None
         if cache.policy is None:
             # A bounded cache needs a policy to decide what survives; without

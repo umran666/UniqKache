@@ -396,7 +396,13 @@ class KVCache:
             if keep_resident < 0:
                 raise CacheStateError(f"keep_resident must be >= 0, got {keep_resident}")
             for idx in self._target_layers(layer_idx):
-                moved += self._store.layer(idx).offload_tail(keep_resident, host=target_device)
+                layer = self._store.layer(idx)
+                if not layer.is_initialized:
+                    # Match the whole-layer mode (and the pinned contract in
+                    # tests/unit/test_offload_prefetch.py): offloading an empty
+                    # layer does nothing (issue #115).
+                    continue
+                moved += layer.offload_tail(keep_resident, host=target_device)
 
         if moved:
             self._offloads += 1

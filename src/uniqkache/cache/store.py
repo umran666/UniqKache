@@ -651,8 +651,20 @@ class LayerStorage:
             self._keys_buf = self._keys_buf.to(device)
             self._values_buf = self._values_buf.to(device)
         else:
-            self.device = device
-            self.metadata.to(device)
+            # An uninitialized layer holds no bytes: there is nothing to move,
+            # and rewriting ``self.device`` here would silently re-home the
+            # layer to the offload tier, so every later append() would allocate
+            # on the wrong device (issue #115). Home-device changes are not
+            # move_to's job; tier state for real bytes is carried by
+            # ``_offloaded``. Mirror the whole-layer offload contract: an
+            # offload of an empty layer does nothing.
+            _log.debug(
+                "layer %d: move_to(%s) skipped; layer holds no buffers and its "
+                "home device %s is unchanged",
+                self.layer_idx,
+                device,
+                self.device,
+            )
             return
 
         self.metadata.to(device)
@@ -701,6 +713,13 @@ class LayerStorage:
                 f"resident boundary {resident} out of range for layer {self.layer_idx} "
                 f"holding {self.num_tokens} tokens"
             )
+        if self.num_tokens == 0:
+            # Nothing to move and nothing to split. Without this guard the
+            # resident == 0 path below would delegate to move_to(host) and,
+            # before issue #115's fix, re-home an empty layer to the offload
+            # tier; keep the no-op explicit so the contract does not depend on
+            # move_to's internals.
+            return 0
         if host == self.device:
             # No cheaper tier: there is nothing to offload to, so the call is a
             # no-op that reports zero — the same rule the whole-layer path

@@ -549,6 +549,16 @@ class LayerStorage:
                 f"keep indices out of range for layer {self.layer_idx} with {before} tokens: "
                 f"min={int(indices.min())}, max={int(indices.max())}"
             )
+        if indices.numel() and int(indices.unique().numel()) != int(indices.numel()):
+            # Duplicates would gather the same rows twice: tokens silently
+            # duplicated, positions/is_sink metadata corrupted, and the
+            # dropped count driven negative (issue #120). Fail loudly per the
+            # project's malformed-input contract instead.
+            raise CacheStateError(
+                f"keep indices contain duplicates for layer {self.layer_idx}: "
+                f"{int(indices.numel())} indices but only "
+                f"{int(indices.unique().numel())} unique"
+            )
 
         if indices.numel() == 0:
             self._keys_buf = self._values_buf = None

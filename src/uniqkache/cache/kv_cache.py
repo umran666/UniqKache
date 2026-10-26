@@ -639,6 +639,13 @@ class KVCache:
                 f"evict indices out of range [0, {num_tokens}): "
                 f"min={int(indices.min())}, max={int(indices.max())}"
             )
+        if indices.numel() and int(indices.unique().numel()) != int(indices.numel()):
+            # Mirror the keep-side guard (issue #120): a duplicated drop index
+            # is malformed input, not something to silently absorb.
+            raise CacheStateError(
+                f"evict indices contain duplicates: {int(indices.numel())} indices but "
+                f"only {int(indices.unique().numel())} unique"
+            )
         mask = torch.ones(num_tokens, dtype=torch.bool)
         mask[indices.cpu()] = False
         return torch.nonzero(mask, as_tuple=False).flatten()

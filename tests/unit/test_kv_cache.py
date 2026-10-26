@@ -136,6 +136,42 @@ class TestEviction:
         with pytest.raises(CacheStateError, match="out of range"):
             full_cache.evict(0, indices=torch.tensor([99]))
 
+    # --- malformed selectors (issue #120) ----------------------------------
+    # Duplicate indices used to be accepted silently: keep() gathered the same
+    # rows twice, so tokens were duplicated, positions/is_sink metadata was
+    # corrupted, and the dropped count went negative.
+
+    def test_duplicate_keep_indices_raise(self, full_cache, kv_factory):
+        full_cache.append(0, kv_factory(4), kv_factory(4))
+        with pytest.raises(CacheStateError, match="duplicates"):
+            full_cache.evict(0, keep=torch.tensor([0, 0, 0, 0]))
+        # State is untouched: the layer still holds its four tokens.
+        assert full_cache.num_tokens(0) == 4
+        assert full_cache.store.layer(0).metadata.positions.tolist() == [0, 1, 2, 3]
+
+    def test_duplicate_evict_indices_raise(self, full_cache, kv_factory):
+        full_cache.append(0, kv_factory(4), kv_factory(4))
+        with pytest.raises(CacheStateError, match="duplicates"):
+            full_cache.evict(0, indices=torch.tensor([1, 1]))
+        assert full_cache.num_tokens(0) == 4
+
+    def test_duplicate_keep_indices_never_drive_the_evicted_count_negative(
+        self, full_cache, kv_factory
+    ):
+        """The reported symptom: `_evicted_tokens` decreasing run-over-run."""
+        full_cache.append(0, kv_factory(4), kv_factory(4))
+        before = full_cache.state_dict()["evicted_tokens"]
+        with pytest.raises(CacheStateError, match="duplicates"):
+            full_cache.evict(0, keep=torch.tensor([0, 0, 0, 0, 0]))
+        assert full_cache.state_dict()["evicted_tokens"] == before
+        assert before >= 0
+
+    def test_unique_keep_indices_still_work(self, full_cache, kv_factory):
+        """The guard rejects duplicates only; ordinary keeps are unaffected."""
+        full_cache.append(0, kv_factory(4), kv_factory(4))
+        assert full_cache.evict(0, keep=torch.tensor([3, 0])) == 2
+        assert full_cache.num_tokens(0) == 2
+
     def test_evict_across_all_layers(self, full_cache, kv_factory):
         for layer in range(NUM_LAYERS):
             full_cache.append(layer, kv_factory(6), kv_factory(6))

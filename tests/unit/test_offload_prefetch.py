@@ -127,6 +127,49 @@ class TestOffloadBehaviour:
     def test_offload_of_empty_layers_does_nothing(self, full_cache):
         assert full_cache.offload() == 0
 
+    def test_move_to_on_an_empty_layer_keeps_the_home_device(self):
+        """Issue #115: an uninitialized layer holds no bytes, so move_to must
+        not rewrite its home device — later appends would allocate on the
+        offload tier and feed CPU tensors into a CUDA forward pass."""
+        config = CacheConfig(
+            num_layers=1, num_kv_heads=2, head_dim=8, dtype=torch.float32, device="cpu"
+        )
+        store = KVStore(config)
+        layer = store.layer(0)
+        assert not layer.is_initialized
+
+        layer.move_to(torch.device("cuda"))
+
+        assert layer.device == torch.device("cpu")
+        assert not layer.is_offloaded
+
+    def test_offload_tail_on_an_empty_layer_is_a_no_op(self):
+        """Issue #115: the token-level path must honour the same contract as
+        the whole-layer path — nothing to move, nothing to split."""
+        config = CacheConfig(
+            num_layers=1, num_kv_heads=2, head_dim=8, dtype=torch.float32, device="cpu"
+        )
+        store = KVStore(config)
+        layer = store.layer(0)
+
+        assert layer.offload_tail(0, host=torch.device("cuda")) == 0
+        assert layer.device == torch.device("cpu")
+        assert not layer.is_offloaded
+
+    def test_append_after_an_empty_layer_offload_allocates_on_the_home_device(self):
+        """Issue #115 end-to-end at the store level: the failure surfaced as
+        later appends landing on the wrong device."""
+        config = CacheConfig(
+            num_layers=1, num_kv_heads=2, head_dim=8, dtype=torch.float32, device="cpu"
+        )
+        store = KVStore(config)
+        layer = store.layer(0)
+        layer.move_to(torch.device("cuda"))  # empty-layer no-op
+
+        layer.append(torch.randn(1, 2, 4, 8), torch.randn(1, 2, 4, 8))
+        assert layer.resident_device == torch.device("cpu")
+        assert layer.num_tokens == 4
+
 
 # ---------------------------------------------------------------------------
 # Tier planning

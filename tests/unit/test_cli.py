@@ -106,6 +106,33 @@ class TestCompressorFlag:
         for spec in captured_specs:
             assert spec.compressor == "int8"
 
+    def test_attention_access_threshold_is_forwarded_in_sweep(self, monkeypatch):
+        # Regression for #117: `--sweep --attention-access-threshold 0.5` accepted
+        # the flag but never forwarded it to the sweep expander, so every swept
+        # row ran with the default threshold while the CLI exited 0.
+        captured_specs = []
+
+        def mock_run_config(config, **kwargs):
+            captured_specs.extend(config.runs)
+            return []
+
+        monkeypatch.setattr("uniqkache.bench.cli.run_config", mock_run_config)
+
+        main(
+            [
+                "--model",
+                "synthetic:tiny",
+                "--policy",
+                "lru",
+                "--sweep",
+                "--attention-access-threshold",
+                "0.5",
+            ]
+        )
+        assert len(captured_specs) > 1
+        for spec in captured_specs:
+            assert spec.attention_access_threshold == 0.5
+
 
 class TestMemoryBudgetFlag:
     """`--memory-budget-mb` converts a byte budget to capacity, and records both."""

@@ -387,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
                 prefetch_policy=args.prefetch_policy,
                 controller=args.controller,
                 adaptive_eviction=args.adaptive_eviction,
+                attention_access_threshold=args.attention_access_threshold,
             )
         else:
             config = ExperimentConfig(name="single-run", runs=[_spec_from_args(args)])

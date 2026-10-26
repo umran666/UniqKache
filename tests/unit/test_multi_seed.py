@@ -9,7 +9,7 @@ import pytest
 
 from tests.conftest import good_record
 from uniqkache.bench import runner
-from uniqkache.bench.cli import _spec_from_args, build_parser
+from uniqkache.bench.cli import _spec_from_args, build_parser, main
 from uniqkache.bench.config import RunSpec, percent_sweep
 from uniqkache.metrics.record import BenchmarkRecord, MetricAggregate, validate_record
 from uniqkache.metrics.report import records_to_markdown
@@ -284,6 +284,48 @@ class TestCliRepetitions:
         assert len(config.runs) > 0
         for run in config.runs:
             assert run.repetitions == 4
+
+    def test_aggregated_record_preserves_capacity_schedule_and_token_fields(self, tmp_path):
+        # Regression for #118: aggregated record was dropping capacity_schedule,
+        # cache_payload_bytes, tokens_per_layer, and utilization_per_layer.
+        # Run a 2-repetition benchmark with capacity_schedule and verify the
+        # aggregated record preserves the fields.
+        result = main(
+            [
+                "--output-dir",
+                str(tmp_path),
+                "--quiet",
+                "--model",
+                "synthetic:tiny",
+                "--policy",
+                "sliding_window",
+                "--context-length",
+                "64",
+                "--max-new-tokens",
+                "2",
+                "--repetitions",
+                "2",
+                "--capacity-schedule",
+                "uniform",
+                "--keep-ratio",
+                "0.5",
+                "--no-quality",
+            ]
+        )
+        assert result == 0
+
+        from uniqkache.metrics.report import load_records
+        records = load_records(tmp_path)
+        assert len(records) == 1
+        agg_record = records[0]
+
+        # Verify the fields are preserved in the aggregated record
+        assert agg_record.capacity_schedule == "uniform"
+        assert agg_record.cache_payload_bytes is not None
+        assert agg_record.cache_payload_bytes > 0
+        assert len(agg_record.tokens_per_layer) > 0
+        assert agg_record.utilization_per_layer is not None
+        assert len(agg_record.utilization_per_layer) > 0
 
 
 class TestReportingMultiSeed:

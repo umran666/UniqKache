@@ -98,6 +98,22 @@ class TestMapping:
         monitor.observe(step=0, cache_bytes=20 * BYTES_PER_TOKEN, current_capacity=20)
         assert monitor.events[-1].pressure == pytest.approx(2.0)
 
+    def test_exhausted_budget_floors_at_one_token(self):
+        """Issue #114: non-cache bytes eating the whole low-watermark share
+        must floor the derived capacity at 1, never 0 — the cache rejects
+        capacity 0 and the run would crash mid-generation."""
+        monitor = _monitor()
+        # 9 tokens of non-cache allocation against a 7-token low-watermark
+        # target: tokens_for_bytes would derive 0.
+        new_capacity = monitor.observe(
+            step=0,
+            cache_bytes=0,
+            current_capacity=64,
+            total_device_bytes=9 * BYTES_PER_TOKEN,
+        )
+        assert new_capacity == 1
+        assert monitor.events[-1].new_capacity == 1
+
 
 # ---------------------------------------------------------------------------
 # Stability rules
@@ -229,6 +245,21 @@ class TestMonitorDrivesACache:
         state = monitor.state_dict()
         assert state["device_byte_budget"] == BUDGET
         assert state["adaptations"][0]["step"] == 3
+
+    def test_exhausted_budget_applies_the_one_token_floor_without_crashing(self, tiny_model):
+        """Issue #114 end-to-end: update() must apply capacity 1, not raise
+        CacheConfigError from set_capacity(0)."""
+        cache = self._cache(tiny_model, capacity=64)
+        budget = 4 * BYTES_PER_TOKEN
+        monitor = MemoryPressureMonitor(cache.config, budget)
+
+        # Observed total allocation leaves nothing for the cache: the
+        # low-watermark target is 3 tokens, non-cache share is 4.
+        new_capacity = monitor.update(
+            cache, step=0, total_device_bytes=4 * BYTES_PER_TOKEN
+        )
+        assert new_capacity == 1
+        assert cache.config.capacity_for_layer(0) == 1
 
 
 class TestAdaptiveEvictionOnTheRecord:
